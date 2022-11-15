@@ -26,4 +26,4 @@ binary_map = binaryOccupancyMap(checkOccupancy(map));
 % 1 is occupied
 
 binary_map_data = getOccupancy(binary_map);
-save('binary_occupancy_map.mat','binary_map_data');
+writematrix(binary_map_data, 'binary_occupancy_map.csv');
