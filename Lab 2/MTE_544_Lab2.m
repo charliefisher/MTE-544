@@ -17,28 +17,13 @@ map.OccupiedThreshold = MapOccupiedThresh;
 map.GridLocationInWorld = MapOrigin;
 
 figure;
-show(map)
+show(map);
 
 binary_map = binaryOccupancyMap(checkOccupancy(map));
-
-%% Likelihood Field %%
-
-pyenv('Version', '/Users/charliefisher/.pyenv/shims/python');
-ros2genmsg('custom_ros2_msgs');
-
-bagreader = ros2bag('bag/t2');
-
-lf = likelihoodFieldSensorModel;
-lf.Map = binary_map;
-lf.SensorLimits = [0.15 12];
-% lf.NumBeams = ;
-lf.ExpectedMeasurementWeight = 0.99;
-% lf.RandomMeasurementWeight = ; % measure as variance of data?
-
-% 
-N_particles = 50;
-
 
 % -1 is unknown
 % 0  is unoccupied
 % 1 is occupied
+
+binary_map_data = getOccupancy(binary_map);
+save('binary_occupancy_map.mat','binary_map_data');
