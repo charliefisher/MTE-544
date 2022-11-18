@@ -25,14 +25,6 @@ class BinaryOccupancyMap:
         y_idx = max_y_idx - math.floor((y - self._origin[1])/self._cell_size)
         return (y_idx, x_idx)
 
-    def map_to_world(self, x_idx: int, y_idx: int) -> tuple[float, float]:
-        # map origin is defined at bottom left corner, but indexing starts at the top left corner
-        # thus, the y coordinate has to be offset
-        max_y_idx: int = self._map.shape[0] - 1
-        x = self._origin[0] + self._cell_size*x_idx + self._cell_size/2
-        y = self._origin[1] + self._cell_size*(max_y_idx - y_idx) + self._cell_size/2
-        return (x, y)
-
     """Checks if a given coordinate in world space is occupied"""
     def is_occupied(self, x: float, y: float) -> bool:
         y_idx, x_idx = self.world_to_map(x, y)
@@ -41,7 +33,21 @@ class BinaryOccupancyMap:
             return False
         return bool(self._map[y_idx, x_idx])  # convert np.bool to python bool
 
-    def _plot_map(self) -> None:
+    """Exports map data to KDTree format"""
+    def to_kdtree(self) -> np.array:
+
+        def map_to_world(coords: np.array) -> np.array:
+            # map origin is defined at bottom left corner, but indexing starts at the top left corner
+            # thus, the y coordinate has to be offset
+            max_y_idx: int = self._map.shape[0] - 1
+            x = self._origin[0] + self._cell_size*coords[:,1] + self._cell_size/2
+            y = self._origin[1] + self._cell_size*(max_y_idx - coords[:,0]) + self._cell_size/2
+            return np.array([x, y]).T
+
+        occupied = np.argwhere(self._map)
+        return map_to_world(occupied)
+
+    def plot(self) -> None:
         map_size = self._map.shape
         extent = (
             self._origin[0], self._origin[0] + map_size[1]*self._cell_size,
@@ -52,11 +58,9 @@ class BinaryOccupancyMap:
         plt.ylim((extent[2], extent[3]))
 
     def plot_points(self, points: np.array) -> None:
-        self._plot_map()
-        plt.scatter(points[:,0], points[:,1], c='r', s=0.2)
+        plt.scatter(points[0], points[1], c='r', s=0.2)
 
     def plot_particles(self, particles: np.array) -> None:
-        self._plot_map()
         for x, y, theta in particles:
             plt.scatter(x, y, c='b', s=10)
             arrow_len = 0.25
