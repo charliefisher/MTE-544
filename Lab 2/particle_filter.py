@@ -4,13 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KDTree
 
-from occupancy_map import BinaryOccupancyMap
+from occupancy_map import TrinaryOccupancyMap
 
 
 MAP_ORIGIN: tuple[float, float] = (-1.94, -8.63)
+MAP_LIMIT: tuple[float, float] = (8.74, 5.08)
 MAP_CELL_SIZE: float = 0.03
-
-# np.random.seed(1) # TODO: remove me
 
 
 Pose = np.array # 3 x 1 vector
@@ -20,7 +19,7 @@ Poses = np.array # n x 3 matrix
 class ParticleFilter:
     def __init__(self, n_particles: float) -> None:
         self._n_particles = n_particles
-        self._map = BinaryOccupancyMap('binary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
+        self._map = TrinaryOccupancyMap('trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
         self._kdt = KDTree(self._map.to_kdtree())
 
         self._angle_min: float = None
@@ -29,7 +28,7 @@ class ParticleFilter:
         self._range_min: float = None
         self._range_max: float = None
 
-        self._robot_poses = self._generate_inital_particles()
+        self._robot_poses = None
         self._weights = np.ndarray(self._n_particles)
 
         self._last_best_pose = None
@@ -57,10 +56,10 @@ class ParticleFilter:
     def _generate_inital_particles(self) -> Poses:
         particles = []
         while len(particles) < self._n_particles:
-            x = np.random.uniform(-1.94, 0.25)  # (-1.94, 8.74)
-            y = np.random.uniform(-8.63, 0.75)  # (-8.63, 5.08)
+            x = np.random.uniform(MAP_ORIGIN[0], MAP_LIMIT[0])
+            y = np.random.uniform(MAP_ORIGIN[1], MAP_LIMIT[1])
 
-            if self._map.is_occupied(x, y):
+            if not self._map.is_free(x, y):
                 continue
 
             theta = np.random.uniform(-np.pi, np.pi)
@@ -91,6 +90,8 @@ class ParticleFilter:
         return np.prod(np.exp(-(distances**2)/(2*lidar_std**2)))  # TODO: try sum
 
     def _run(self, iter: int, scan_data: np.array) -> Pose:
+        assert self._robot_poses is not None
+
         (angle, scan_data) = self._remove_bad_measurements(scan_data)
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
 
@@ -98,8 +99,8 @@ class ParticleFilter:
 
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
         
-        if iter > 0:  # do not add noise on first measurement
-            # add noise to points
+        if iter > 0:
+            # add noise to points (except on first iteration which are random guesses)
             sigma = np.std(self._robot_poses, axis=1, keepdims=1)/2
             noise = sigma * np.random.randn(3, self._n_particles)
             self._robot_poses = self._robot_poses + noise
@@ -142,6 +143,9 @@ class ParticleFilter:
         # check each lidar scan has the same number of measurements
         assert all(len(scan_data[0]) == len(s) for s in scan_data)
 
+        # randomize particles for first iteration
+        self._robot_poses = self._generate_inital_particles()
+
         # run filter where a single iteration is a single record of scan data
         for i, scan in enumerate(scan_data):
             lidar_measurement = np.array(scan)
@@ -155,20 +159,22 @@ class ParticleFilter:
 
 
 def test():
-    map = BinaryOccupancyMap('binary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
+    from occupancy_map import OccupancyStatus
+
+    map = TrinaryOccupancyMap('trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
 
     # check specific known locations
-    assert not map.is_occupied(6, -2)
-    assert map.is_occupied(-0.0650001, -2.075)
-    assert map.is_occupied(-0.0650001, -2.105)
-    assert map.is_occupied(-0.0350001, -2.105)
+    assert map.get_occupancy(6, -2) == OccupancyStatus.UNKNOWN
+    assert map.get_occupancy(-0.0650001, -2.075) == OccupancyStatus.OCCUPIED
+    assert map.get_occupancy(-0.0650001, -2.105) == OccupancyStatus.OCCUPIED
+    assert map.get_occupancy(-0.0350001, -2.105) == OccupancyStatus.OCCUPIED
 
     # check underlying data of known location
-    assert map.binary_data[239, 63]
+    assert map.map_data[239, 63]
 
     # check out of bounds access
-    assert map.is_occupied(-2, -9)
-    assert map.is_occupied(10, 6)
+    assert map.get_occupancy(-2, -9) == OccupancyStatus.UNKNOWN
+    assert map.get_occupancy(10, 6) == OccupancyStatus.UNKNOWN
 
     print('Passed Tests!')
 
@@ -176,4 +182,5 @@ def test():
 if __name__ == '__main__':
     pf = ParticleFilter(1000)
     pf.localize('point2.json')
+    pf.localize('point4.json')
     
