@@ -75,8 +75,13 @@ class TrinaryOccupancyMap:
     def plot_points(self, points: np.array) -> None:
         plt.scatter(points[0], points[1], c='r', s=0.2)
 
+    def plot_particle(self, particle: np.array) -> None:
+        x, y, theta = particle
+
+        plt.scatter(x, y, c='b', s=10)
+        arrow_len = 0.25
+        plt.arrow(x, y, arrow_len*np.cos(theta), arrow_len*np.sin(theta), color='b')
+
     def plot_particles(self, particles: np.array) -> None:
-        for x, y, theta in particles:
-            plt.scatter(x, y, c='b', s=10)
-            arrow_len = 0.25
-            plt.arrow(x, y, arrow_len*np.cos(theta), arrow_len*np.sin(theta), color='b')
+        for p in particles:
+            self.plot_particle(p)    

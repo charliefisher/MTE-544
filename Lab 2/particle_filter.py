@@ -1,4 +1,7 @@
+import os
 import json
+import shutil
+from typing import Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,6 +9,8 @@ from sklearn.neighbors import KDTree
 
 from occupancy_map import TrinaryOccupancyMap
 
+
+FIGURE_DIR: str = 'figures'
 
 MAP_ORIGIN: tuple[float, float] = (-1.94, -8.63)
 MAP_LIMIT: tuple[float, float] = (8.74, 5.08)
@@ -21,8 +26,8 @@ class ParticleFilter:
         self._n_particles = n_particles
         self._map = TrinaryOccupancyMap('trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
         self._kdt = KDTree(self._map.to_kdtree())
+        self._data_name: Optional[str] = None
 
-        self._angle_min: float = None
         self._angle_max: float = None
         self._angle_increment: float = None
         self._range_min: float = None
@@ -89,8 +94,22 @@ class ParticleFilter:
         distances = self._kdt.query(scan_data_map[0:2].T, k=1)[0][:]
         return np.prod(np.exp(-(distances**2)/(2*lidar_std**2)))  # TODO: try sum
 
+    def _get_best_pose(self) -> Pose:
+        best_pose_idx = np.argmax(self._weights)
+        return self._robot_poses[:,best_pose_idx]
+
     def _run(self, iter: int, scan_data: np.array) -> Pose:
         assert self._robot_poses is not None
+
+        if iter % 10 == 0:
+            print('Iteration: {}'.format(iter))
+
+        if iter <= 10 and self._data_name is not None:  # plot if specified
+            plt.figure()
+            self._map.plot()
+            self._map.plot_particles(self._robot_poses.T)
+            plt.savefig('{}/{}_i{}.png'.format(FIGURE_DIR, self._data_name, iter))
+            plt.close()
 
         (angle, scan_data) = self._remove_bad_measurements(scan_data)
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
@@ -119,14 +138,12 @@ class ParticleFilter:
         resample = np.random.choice(np.arange(0, self._n_particles), p=self._weights, size=self._n_particles)
         self._robot_poses = self._robot_poses[:,resample]
 
-        best_pose_idx = np.argmax(self._weights)
-        best_pose = self._robot_poses[:,best_pose_idx]
-        print('best_pose', best_pose_idx, best_pose)
+        best_pose = self._get_best_pose()
 
         self._last_best_pose = best_pose
         self._last_best_pose_pts = self._robot_frame_to_map(best_pose, scan_data_robot)[0:2]
 
-    def localize(self, lidar_data_file: str) -> tuple[float, float]:
+    def localize(self, lidar_data_file: str, data_name: Optional[str] = None) -> tuple[float, float]:
         # read json file
         with open(lidar_data_file, 'r') as data_file:
             data = json.load(data_file)
@@ -143,6 +160,9 @@ class ParticleFilter:
         # check each lidar scan has the same number of measurements
         assert all(len(scan_data[0]) == len(s) for s in scan_data)
 
+        self._data_name = data_name
+        print('Starting Particle Filter...')
+
         # randomize particles for first iteration
         self._robot_poses = self._generate_inital_particles()
 
@@ -151,10 +171,26 @@ class ParticleFilter:
             lidar_measurement = np.array(scan)
             self._run(i, lidar_measurement)
 
+        # get result of filter
+        robot_pose = self._get_best_pose()
+        print('\nRobot Position:', robot_pose, '\n')
+
+        # plot robot in localized position with lidar data
+        final_lidar_measurement = np.array(scan_data[-1])
+        (angle, scan_data) = self._remove_bad_measurements(final_lidar_measurement)
+        scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
+        scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
+        robot_lidar_pts = self._robot_frame_to_map(robot_pose, scan_data_robot)[0:2]
+
+        assert np.all(np.equal(self._last_best_pose, robot_pose))
+        assert np.all(np.equal(self._last_best_pose_pts, robot_lidar_pts))
+
         plt.figure()
         self._map.plot()
-        self._map.plot_particles([self._last_best_pose.T])
-        self._map.plot_points(self._last_best_pose_pts)
+        self._map.plot_particle(robot_pose.T)
+        self._map.plot_points(robot_lidar_pts)
+        if self._data_name is not None:
+            plt.savefig('{}/{}_final.png'.format(FIGURE_DIR, self._data_name))
         plt.show()
 
 
@@ -180,7 +216,11 @@ def test():
 
 
 if __name__ == '__main__':
-    pf = ParticleFilter(1000)
-    pf.localize('point2.json')
-    pf.localize('point4.json')
+    if os.path.exists(FIGURE_DIR):
+        shutil.rmtree(FIGURE_DIR)
+    os.mkdir(FIGURE_DIR)
+
+    pf = ParticleFilter(10000)
+    pf.localize('point2.json', 'p2')
+    pf.localize('point4.json', 'p4')
     
