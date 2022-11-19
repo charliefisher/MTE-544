@@ -23,14 +23,14 @@ class ParticleFilter:
         self._map = BinaryOccupancyMap('binary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
         self._kdt = KDTree(self._map.to_kdtree())
 
-        self._robot_poses = None
-        self._weights = np.ndarray(self._n_particles)
-
         self._angle_min: float = None
         self._angle_max: float = None
         self._angle_increment: float = None
         self._range_min: float = None
         self._range_max: float = None
+
+        self._robot_poses = self._generate_inital_particles()
+        self._weights = np.ndarray(self._n_particles)
 
         self._last_best_pose = None
         self._last_best_pose_pts = None
@@ -65,6 +65,7 @@ class ParticleFilter:
 
             theta = np.random.uniform(-np.pi, np.pi)
             particles.append(np.array([x, y, theta]))
+
         return np.array(particles).T
 
     def _lidar_frame_to_robot(self, scan_data_cartesian: np.array) -> np.array:
@@ -89,7 +90,7 @@ class ParticleFilter:
         distances = self._kdt.query(scan_data_map[0:2].T, k=1)[0][:]
         return np.prod(np.exp(-(distances**2)/(2*lidar_std**2)))  # TODO: try sum
 
-    def _run(self, scan_data: np.array) -> Pose:
+    def _run(self, iter: int, scan_data: np.array) -> Pose:
         (angle, scan_data) = self._remove_bad_measurements(scan_data)
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
 
@@ -97,9 +98,11 @@ class ParticleFilter:
 
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
         
-        # generate initial guesses on first measurement
-        if self._robot_poses is None:
-            self._robot_poses = self._generate_inital_particles()
+        if iter > 0:  # do not add noise on first measurement
+            # add noise to points
+            sigma = np.std(self._robot_poses, axis=1, keepdims=1)/2
+            noise = sigma * np.random.randn(3, self._n_particles)
+            self._robot_poses = self._robot_poses + noise
 
         for i, pose in enumerate(self._robot_poses.T):
             # lidar data in map frame
@@ -114,11 +117,6 @@ class ParticleFilter:
         # resample points
         resample = np.random.choice(np.arange(0, self._n_particles), p=self._weights, size=self._n_particles)
         self._robot_poses = self._robot_poses[:,resample]
-        
-        # add noise to points
-        sigma = np.std(self._robot_poses, axis=1, keepdims=1)/2
-        noise = sigma * np.random.randn(3, self._n_particles)
-        self._robot_poses = self._robot_poses + noise
 
         best_pose_idx = np.argmax(self._weights)
         best_pose = self._robot_poses[:,best_pose_idx]
@@ -145,13 +143,13 @@ class ParticleFilter:
         assert all(len(scan_data[0]) == len(s) for s in scan_data)
 
         # run filter where a single iteration is a single record of scan data
-        for scan in scan_data:
+        for i, scan in enumerate(scan_data):
             lidar_measurement = np.array(scan)
-            self._run(lidar_measurement)
+            self._run(i, lidar_measurement)
 
         plt.figure()
         self._map.plot()
-        self._map.plot_particles(self._robot_poses.T)
+        self._map.plot_particles([self._last_best_pose.T])
         self._map.plot_points(self._last_best_pose_pts)
         plt.show()
 
@@ -177,5 +175,5 @@ def test():
 
 if __name__ == '__main__':
     pf = ParticleFilter(1000)
-    pf.localize('point4.json')
+    pf.localize('point2.json')
     
