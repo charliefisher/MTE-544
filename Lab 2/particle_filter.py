@@ -17,14 +17,15 @@ MAP_LIMIT: tuple[float, float] = (8.74, 5.08)
 MAP_CELL_SIZE: float = 0.03
 
 
-Pose = np.array # 3 x 1 vector
-Poses = np.array # n x 3 matrix
+Pose = np.array  # 3 x 1 vector
+Poses = np.array  # n x 3 matrix
 
 
 class ParticleFilter:
     def __init__(self, n_particles: float) -> None:
         self._n_particles = n_particles
-        self._map = TrinaryOccupancyMap('trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
+        self._map = TrinaryOccupancyMap(
+            'trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
         self._kdt = KDTree(self._map.to_kdtree())
         self._data_name: Optional[str] = None
 
@@ -42,13 +43,15 @@ class ParticleFilter:
     def _remove_bad_measurements(self, scan_data: np.array) -> tuple[np.array, np.array]:
         # take only samples where lidar distance is finite
         valid_data = np.isfinite(scan_data)
-        angle = np.arange(self._angle_min, self._angle_max + self._angle_increment, self._angle_increment)
+        angle = np.arange(self._angle_min, self._angle_max +
+                          self._angle_increment, self._angle_increment)
         scan_data = scan_data[valid_data]
         angle = angle[valid_data]
 
         # clip scan data to correct range
         scan_data = np.clip(scan_data, self._range_min, self._range_max)
-        assert np.all(np.logical_and(np.less_equal(self._range_min, scan_data), np.less_equal(scan_data, self._range_max)))
+        assert np.all(np.logical_and(np.less_equal(
+            self._range_min, scan_data), np.less_equal(scan_data, self._range_max)))
 
         return (angle, scan_data)
 
@@ -81,7 +84,8 @@ class ParticleFilter:
         ], np.float64)
         return T_robot_lidar@scan_data_cartesian
 
-    def _robot_frame_to_map(self, robot_pose: Pose, scan_data_robot: np.array) -> np.array:
+    def _robot_frame_to_map(self, robot_pose: Pose,
+                            scan_data_robot: np.array) -> np.array:
         theta = robot_pose[2]
         T_map_robot = np.array([
             [np.cos(theta), -np.sin(theta), robot_pose[0]],
@@ -92,19 +96,21 @@ class ParticleFilter:
 
     def _weight_particle(self, scan_data_map: np.array, lidar_std: float) -> float:
         distances = self._kdt.query(scan_data_map[0:2].T, k=1)[0][:]
-        return np.prod(np.exp(-(distances**2)/(2*lidar_std**2)))  # TODO: try sum
+        # TODO: try sum
+        return np.prod(np.exp(-(distances**2)/(2*lidar_std**2)))
 
     def _get_best_pose(self) -> Pose:
         best_pose_idx = np.argmax(self._weights)
-        return self._robot_poses[:,best_pose_idx]
+        return self._robot_poses[:, best_pose_idx]
 
     def _variance_particles(self) -> float:
-        return np.var(self._robot_poses)
+        return np.var(self._robot_poses, axis=1)
 
     def _mse_best_particle(self, scan_data_cartesian: np.array) -> float:
         best_pose = self._get_best_pose()
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
-        best_particle_lidar_pts = self._robot_frame_to_map(best_pose, scan_data_robot)[0:2]
+        best_particle_lidar_pts = self._robot_frame_to_map(
+            best_pose, scan_data_robot)[0:2]
 
         distances = self._kdt.query(best_particle_lidar_pts[0:2].T, k=1)[0][:]
         return np.sum(np.square(distances))
@@ -116,7 +122,8 @@ class ParticleFilter:
             plt.figure()
             self._map.plot()
             self._map.plot_particles(self._robot_poses.T)
-            plt.savefig('{}/{}_i{}.png'.format(FIGURE_DIR, self._data_name, iter))
+            plt.savefig(
+                '{}/{}_i{}.png'.format(FIGURE_DIR, self._data_name, iter))
             plt.close()
 
         (angle, scan_data) = self._remove_bad_measurements(scan_data)
@@ -130,7 +137,7 @@ class ParticleFilter:
         lidar_std = np.std(scan_data)
 
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
-        
+
         if iter > 0:
             # add noise to points (except on first iteration which are random guesses)
             sigma = np.std(self._robot_poses, axis=1, keepdims=1)
@@ -150,14 +157,17 @@ class ParticleFilter:
         self._weights = self._weights/self._weights.sum(axis=0, keepdims=1)
 
         # resample points
-        resample = np.random.choice(np.arange(0, self._n_particles), p=self._weights, size=self._n_particles)
-        self._robot_poses = self._robot_poses[:,resample]
+        resample = np.random.choice(
+            np.arange(0, self._n_particles), p=self._weights, size=self._n_particles)
+        self._robot_poses = self._robot_poses[:, resample]
 
         best_pose = self._get_best_pose()
         self._last_best_pose = best_pose
-        self._last_best_pose_pts = self._robot_frame_to_map(best_pose, scan_data_robot)[0:2]
+        self._last_best_pose_pts = self._robot_frame_to_map(
+            best_pose, scan_data_robot)[0:2]
 
-    def localize(self, lidar_data_file: str, data_name: Optional[str] = None) -> tuple[float, float]:
+    def localize(self, lidar_data_file: str,
+                 data_name: Optional[str] = None) -> tuple[float, float]:
         # read json file
         with open(lidar_data_file, 'r') as data_file:
             data = json.load(data_file)
@@ -194,7 +204,8 @@ class ParticleFilter:
         (angle, scan_data) = self._remove_bad_measurements(final_lidar_measurement)
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
-        robot_lidar_pts = self._robot_frame_to_map(robot_pose, scan_data_robot)[0:2]
+        robot_lidar_pts = self._robot_frame_to_map(
+            robot_pose, scan_data_robot)[0:2]
 
         print('  Variance:', self._variance_particles())
         print('  MSE:', self._mse_best_particle(scan_data_cartesian))
@@ -215,7 +226,8 @@ class ParticleFilter:
 def test():
     from occupancy_map import OccupancyStatus
 
-    map = TrinaryOccupancyMap('trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
+    map = TrinaryOccupancyMap(
+        'trinary_occupancy_map.csv', MAP_ORIGIN, MAP_CELL_SIZE)
 
     # check specific known locations
     assert map.get_occupancy(6, -2) == OccupancyStatus.UNKNOWN
@@ -241,4 +253,3 @@ if __name__ == '__main__':
     pf = ParticleFilter(10000)
     pf.localize('point2.json', 'p2')
     pf.localize('point4.json', 'p4')
-    

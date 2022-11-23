@@ -13,7 +13,8 @@ class OccupancyStatus(IntEnum):
 
 
 class TrinaryOccupancyMap:
-    def __init__(self, csv_file: str, origin: tuple[float, float], cell_size: float) -> None:
+    def __init__(self, csv_file: str,
+                 origin: tuple[float, float], cell_size: float) -> None:
         self._map = np.genfromtxt(csv_file, delimiter=',', dtype=np.int8)
         self._origin = origin
         self._cell_size = cell_size
@@ -25,8 +26,8 @@ class TrinaryOccupancyMap:
 
     """Converts world coordinates to indices in the map"""
     def world_to_map(self, x: float, y: float) -> tuple[int, int]:
-        # map origin is defined at bottom left corner, but indexing starts at the top left corner
-        # thus, the y coordinate has to be offset
+        # map origin is defined at bottom left corner, but indexing starts at 
+        # the top left corner, thus, the y coordinate has to be offset
         max_y_idx: int = self.map_data.shape[0] - 1
         x_idx = math.floor((x - self._origin[0])/self._cell_size)
         y_idx = max_y_idx - math.floor((y - self._origin[1])/self._cell_size)
@@ -35,7 +36,8 @@ class TrinaryOccupancyMap:
     """Gets the occupancy status of a given coordinate"""
     def get_occupancy(self, x: float, y: float) -> bool:
         y_idx, x_idx = self.world_to_map(x, y)
-        if x_idx < 0 or y_idx < 0 or x_idx >= self.map_data.shape[1] or y_idx >= self.map_data.shape[0]:
+        if x_idx < 0 or y_idx < 0 or \
+           x_idx >= self.map_data.shape[1] or y_idx >= self.map_data.shape[0]:
             warnings.warn("({}, {}) is outside of map!".format(x, y))
             return OccupancyStatus.UNKNOWN
         return self.map_data[y_idx, x_idx]
@@ -48,11 +50,12 @@ class TrinaryOccupancyMap:
     def to_kdtree(self) -> np.array:
 
         def map_to_world(coords: np.array) -> np.array:
-            # map origin is defined at bottom left corner, but indexing starts at the top left corner
-            # thus, the y coordinate has to be offset
+            # map origin is defined at bottom left corner, but indexing starts at
+            # the top left corner, thus, the y coordinate has to be offset
             max_y_idx: int = self.map_data.shape[0] - 1
             x = self._origin[0] + self._cell_size*coords[:,1] + self._cell_size/2
-            y = self._origin[1] + self._cell_size*(max_y_idx - coords[:,0]) + self._cell_size/2
+            y = self._origin[1] + self._cell_size*(max_y_idx - coords[:,0]) \
+                + self._cell_size/2
             return np.array([x, y]).T
 
         occupied = np.argwhere(self.map_data == OccupancyStatus.OCCUPIED)
@@ -60,7 +63,8 @@ class TrinaryOccupancyMap:
 
     def plot(self) -> None:
         map_data = np.copy(self.map_data)
-        map_data[map_data == OccupancyStatus.UNKNOWN] = np.iinfo(map_data.dtype).max / 1.15
+        map_data[map_data == OccupancyStatus.UNKNOWN] = \
+                                                    np.iinfo(map_data.dtype).max / 1.15
         map_data[map_data == OccupancyStatus.FREE] = np.iinfo(map_data.dtype).max
         map_data[map_data == OccupancyStatus.OCCUPIED] = 0
 
