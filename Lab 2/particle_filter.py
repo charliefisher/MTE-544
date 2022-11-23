@@ -98,11 +98,19 @@ class ParticleFilter:
         best_pose_idx = np.argmax(self._weights)
         return self._robot_poses[:,best_pose_idx]
 
+    def _variance_particles(self) -> float:
+        return np.var(self._robot_poses)
+
+    def _mse_best_particle(self, scan_data_cartesian: np.array) -> float:
+        best_pose = self._get_best_pose()
+        scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
+        best_particle_lidar_pts = self._robot_frame_to_map(best_pose, scan_data_robot)[0:2]
+
+        distances = self._kdt.query(best_particle_lidar_pts[0:2].T, k=1)[0][:]
+        return np.sum(np.square(distances))
+
     def _run(self, iter: int, scan_data: np.array) -> Pose:
         assert self._robot_poses is not None
-
-        if iter % 10 == 0:
-            print('Iteration: {}'.format(iter))
 
         if iter <= 10 and self._data_name is not None:  # plot if specified
             plt.figure()
@@ -114,13 +122,20 @@ class ParticleFilter:
         (angle, scan_data) = self._remove_bad_measurements(scan_data)
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
 
+        if iter % 10 == 0:
+            print('Iteration: {}'.format(iter))
+            print('   Variance:', self._variance_particles())
+            print('   MSE:', self._mse_best_particle(scan_data_cartesian))
+
         lidar_std = np.std(scan_data)
 
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
         
         if iter > 0:
             # add noise to points (except on first iteration which are random guesses)
-            sigma = np.std(self._robot_poses, axis=1, keepdims=1)/2
+            sigma = np.std(self._robot_poses, axis=1, keepdims=1)
+            # sigma = np.exp(-1/20*iter)*np.array([[0.25], [0.25], [0.5]])
+            # print('sigma', sigma)
             noise = sigma * np.random.randn(3, self._n_particles)
             self._robot_poses = self._robot_poses + noise
 
@@ -139,7 +154,6 @@ class ParticleFilter:
         self._robot_poses = self._robot_poses[:,resample]
 
         best_pose = self._get_best_pose()
-
         self._last_best_pose = best_pose
         self._last_best_pose_pts = self._robot_frame_to_map(best_pose, scan_data_robot)[0:2]
 
@@ -173,7 +187,7 @@ class ParticleFilter:
 
         # get result of filter
         robot_pose = self._get_best_pose()
-        print('\nRobot Position:', robot_pose, '\n')
+        print('\nRobot Position:', robot_pose, )
 
         # plot robot in localized position with lidar data
         final_lidar_measurement = np.array(scan_data[-1])
@@ -181,6 +195,10 @@ class ParticleFilter:
         scan_data_cartesian = self._lidar_scan_to_cartesian(angle, scan_data)
         scan_data_robot = self._lidar_frame_to_robot(scan_data_cartesian)
         robot_lidar_pts = self._robot_frame_to_map(robot_pose, scan_data_robot)[0:2]
+
+        print('  Variance:', self._variance_particles())
+        print('  MSE:', self._mse_best_particle(scan_data_cartesian))
+        print()
 
         assert np.all(np.equal(self._last_best_pose, robot_pose))
         assert np.all(np.equal(self._last_best_pose_pts, robot_lidar_pts))
