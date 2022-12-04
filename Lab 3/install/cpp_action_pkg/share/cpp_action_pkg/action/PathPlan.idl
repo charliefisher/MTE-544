@@ -1,0 +1,19 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from cpp_action_pkg/action/PathPlan.action
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/Point.idl"
+
+module cpp_action_pkg {
+  module action {
+    struct PathPlan_Goal {
+      geometry_msgs::msg::Point end_position;
+    };
+    struct PathPlan_Result {
+      boolean success;
+    };
+    struct PathPlan_Feedback {
+      geometry_msgs::msg::Point current_position;
+    };
+  };
+};

@@ -1,0 +1,5 @@
+geometry_msgs/Point end_position
+---
+bool success
+---
+geometry_msgs/Point current_position
