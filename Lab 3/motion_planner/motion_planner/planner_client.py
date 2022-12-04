@@ -15,6 +15,7 @@ class PathActionClient(Node):
         self._goal_future = None
         self._get_result_future = None
 
+    """Make request to action server"""
     def send_goal(self, x: float, y: float) -> None:
         self.get_logger().info('Requesting path to ({}, {})'.format(x, y))
 
@@ -28,6 +29,7 @@ class PathActionClient(Node):
 
         self._goal_future.add_done_callback(self._goal_response_callback)
 
+    """Print whether action request was accepted/rejected"""
     def _goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
@@ -39,6 +41,7 @@ class PathActionClient(Node):
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self._get_result_callback)
 
+    """Print final result of action request"""
     def _get_result_callback(self, future):
         result = future.result().result
         if result.success:
@@ -47,6 +50,7 @@ class PathActionClient(Node):
             self.get_logger().info('Did not reach goal position!')
         rclpy.shutdown()
 
+    """Print feedback message from action request"""
     def _feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback
         self.get_logger().info('Intermediate position: ({}, {})'.format(
@@ -57,6 +61,7 @@ class PathActionClient(Node):
 def main(args=None):
     rclpy.init(args=args)
 
+    # check input arguments
     if len(sys.argv) != 3:
         raise ValueError("x and y coordinates of end poisition are required")
 

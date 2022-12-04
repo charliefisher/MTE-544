@@ -43,6 +43,7 @@ class PlannerServer(Node):
             )
         )
 
+        # costmap and associated metadata, will be updated by subscription callback
         self._costmap = None
         self._costmap_width = None
         self._costmap_height = None
@@ -73,10 +74,12 @@ class PlannerServer(Node):
         plt.grid()
 
     def _costmap_callback(self, msg: OccupancyGrid) -> None:
+        # set instance variables with result of subscription
         self._costmap_width = msg.info.width
         self._costmap_height = msg.info.height
         self._costmap_resolution = msg.info.resolution
         self._costmap_origin = msg.info.origin
+        # costmap is received as 1d array, reshape to 2d
         self._costmap = np.array(msg.data, dtype=np.int8).reshape(
             (self._costmap_height, self._costmap_width)
         )
@@ -106,6 +109,7 @@ class PlannerServer(Node):
             math.floor((y - self._costmap_origin.position.y) / self._costmap_resolution)
         )
 
+    """Sets the goal point of the controller from a specific index in the path"""
     def _set_controller_goal(self, path: np.array, pt_idx: int) -> None:
         next_pt = path[pt_idx]
         intermediate_goal = Point()
@@ -126,12 +130,12 @@ class PlannerServer(Node):
             result.success = False
             return result
         
-        # Define here your start and end points
+        # start at current position of robot
         start = self._world_to_costmap(self._controller.cur_position.x, self._controller.cur_position.y)
-        # start = self._world_to_costmap(0, 0)
         self.get_logger().info('start pos {} {}'.format(self._controller.cur_position.x, self._controller.cur_position.y))
         self.get_logger().info('start pos (in costmap) {} {}'.format(start[0], start[1]))
         
+        # end at requested position
         end = self._world_to_costmap(request_handle.request.end_position.x, request_handle.request.end_position.y)
         greediness = 1
 
@@ -139,7 +143,7 @@ class PlannerServer(Node):
             start[0], start[1], end[0], end[1]
         ))
 
-        # Compute the path with your implementation of Astar
+        # Compute the path with A*
         path = np.asarray(astar(self._costmap.T, start, end, greediness), dtype=np.float)
 
         self.get_logger().info('Full path: {}'.format(path))
@@ -151,22 +155,23 @@ class PlannerServer(Node):
             result.success = False
             return result
 
-
+        # convert path from costmap coordinates to world coordinates
         self.get_logger().info('Full path (costmap): {}'.format(path))
         path = np.array([self._costmap_to_world(*p) for p in path])
         self.get_logger().info('Full path (world): {}'.format(path))
 
+        # show planned path
         self._visualize_costmap()
         plt.plot(path[:, 0], path[:, 1], 'r')
         plt.show()
 
         finished_control = False
-        self._set_controller_goal(path, 0)
+        self._set_controller_goal(path, 0)  # set first goal
         pt_idx = 1
         def execute_path() -> None:
             nonlocal finished_control, pt_idx
 
-            if self._controller.at_goal():
+            if self._controller.at_goal():  # at an intermediate goal point
                 # print feedback message
                 feedback_msg = PathPlan.Feedback()
                 feedback_msg.current_position = self._controller.cur_position
@@ -176,6 +181,7 @@ class PlannerServer(Node):
                 self._set_controller_goal(path, pt_idx)
                 pt_idx += 1
                 
+                # at final goal point, stop control loop
                 finished_control = pt_idx >= len(path)
 
             self._controller.run()
@@ -187,11 +193,13 @@ class PlannerServer(Node):
         while not finished_control:
             rclpy.spin_once(self)
 
+        # cleanup
         self._controller.stop()
         path_exec_timer.cancel()
 
         time.sleep(0)  # yield thread
 
+        # successfully reached end position
         request_handle.succeed()
         result = PathPlan.Result()
         result.success = True

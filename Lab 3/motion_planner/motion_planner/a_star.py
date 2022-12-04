@@ -19,8 +19,8 @@ class node():
 
 diagonal_distance = int(2**(0.5))
 orthogonal_distance = 1.0
-occupancy_threshold = 70
-occupancy_scaling_factor = 0.15
+occupancy_threshold = 70  # do not visit cells with cost greater than this threshold
+occupancy_scaling_factor = 0.15 # scale factor between costmap and distance cost
 
 
 def astar(maze, start, end, greediness):
@@ -56,7 +56,7 @@ def astar(maze, start, end, greediness):
 
         # Found the goal, you can also implement what should happen if there is no possible path
         if current_node == end_node:
-            # Complete here code to return the shortest path found
+            # return the shortest path found
             path = []
             current = current_node
             while current is not None:
@@ -64,7 +64,7 @@ def astar(maze, start, end, greediness):
                 current = current.parent
             return path[::-1]
 
-        # Complete here code to generate children, which are the neighboring nodes. You should use 4 or 8 points connectivity for a grid.
+        # generate children, which are the neighboring nodes using 8 points connectivity for a grid
         children = []
         for new_position in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
             node_position = (
@@ -96,7 +96,7 @@ def astar(maze, start, end, greediness):
                            ** 2 + (child.position[1] - end_node.position[1])**2)
                 child.f = child.g + greediness*child.h
 
-                # Complete here code to check whether to add a child to the open list
+                # check whether to add a child to the open list
                 for open_node in open_list:
                     if child == open_node and child.f > open_node.f:
                         break
@@ -104,7 +104,7 @@ def astar(maze, start, end, greediness):
                     if child in open_list:
                         open_list.remove(child)
                     open_list.append(child)
-    return []
+    return []  # no path found, return empty list
 
 
 def main():
@@ -129,8 +129,6 @@ def main():
         "/home/soyazhekhan/Documents/lab3/src/path_planner_node/path_planner_node/costmap(1).csv", delimiter=',', dtype=np.int8)
 
     maze = np.transpose(maze)
-    # maze = np.flip(maze,axis=0)
-    # maze = np.flip(maze,axis=1)
 
     # Define here your start and end points
     start = (5, 15)
