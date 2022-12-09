@@ -1,15 +1,47 @@
 #!/usr/bin/env python3
 
+"""
+Kalman Filter implementation based on example code provided on LEARN
+"""
+
+import json
+import math
+
 import numpy as np
 from numpy.random import randn
-import math
 import matplotlib.pyplot as plt
 
-## Example code written by: Christian Mele, adapted to Python by Yue Hu
+# custom type hints
+Quaternion = np.array
+Vector3 = np.array
 
-class KalmanFilter():
-    def __init__(self):
+# dictionary keys for transforms
+BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
+LEFT_WHEEL_TO_BASE_LINK: str = 'left_wheel_to_base'
+RIGHT_WHEEL_TO_BASE_LINK: str = 'right_wheel_to_base'
+
+
+"""
+Kalman Filter to localize turtlebot 4
+State vector: [x; x_dot; theta; omega]
+"""
+class KalmanFilter:
+    def __init__(self, data_file_path):
+
+        # read data from bagfile
+        with open(data_file_path, 'r') as data_file:
+            data = json.load(data_file)
+
+        # calculate actual robot pose, used to calculate MSE
+        self._true_robot_pose = self._compute_true_robot_position(data['tf'][BASE_FOOTPRINT_TO_ODOM])
+
+        plt.figure()
+        plt.scatter(self._true_robot_pose[:, 0], self._true_robot_pose[:, 1])
+        plt.show()
+
     
+        self._data_file = data_file  
+
         # Time step of analysis
         self.dt = 0.1 # (relatively slow refresh rate)
 
@@ -40,6 +72,45 @@ class KalmanFilter():
 
         self.R = np.matrix([[0.05, 0], [0, 0.05]]) # this is the sensor model variance-usually characterized to accompany
                                                   # the sensor model already starting
+
+    """Convert orientation quaternion to robot heading"""
+    def orientation_to_heading(self, orientation: Quaternion) -> float:
+        # convert quarternion to robot heading
+        q = orientation
+        t3 = 2.0*(q.w * q.z + q.x * q.y)
+        t4 = 1.0 - 2.0*(q.y*q.y + q.z*q.z)
+        return math.atan2(t3, t4)
+
+    """Convert quaternion to homogeneous transformation matrix"""
+    def tf_to_homogenous(self, translation: Vector3, rotation: Quaternion) -> np.array:
+        q1 = rotation[0]  # x
+        q2 = rotation[1]  # y
+        q3 = rotation[2]  # z
+        qr = rotation[3]  # w
+
+        return np.array([
+            [qr**2 + q1**2 - q2**2 - q3**2, 2*(q1*q2-q3*qr), translation[0]],
+            [2*(qr*q3 + q1*q2), qr**2 - q1**2 + q2**2 - q3**2, translation[1]],
+            [0, 0, 1]
+        ], np.float64)
+
+    """Calculate the actual pose of the robot from tf from base footprint to odom"""
+    def _compute_true_robot_position(self, tf_base_footprint_to_odom: dict) -> np.array:
+        n_points = len(tf_base_footprint_to_odom)  # number of measurements
+        robot_pose = np.zeros((n_points, 3))
+
+        origin = np.array([0, 0, 1])  # homogenous coordinate of origin
+
+        for i, tf in enumerate(tf_base_footprint_to_odom):
+            # compute transform for current pose
+            bf_to_odom = self.tf_to_homogenous(tf['translation'], tf['rotation'])
+            # transform origin in base footprint frame to odom frame
+            bf_pose_in_odom = bf_to_odom@origin
+            # store robot pose in odom frame
+            robot_pose[i] = bf_pose_in_odom
+
+        return robot_pose
+
 
     def run_kalman_filter(self, Tfinal):
         T = np.arange(0, Tfinal, self.dt)
@@ -125,7 +196,7 @@ class KalmanFilter():
 
 def main():
     print("MTE544 Final Project - Kalman Filter")
-    kf = KalmanFilter()
+    kf = KalmanFilter('path.json')
     Tfinal = 10
     x, xhat_S, x_S, y_hat = kf.run_kalman_filter(Tfinal)
     kf.plot_results(Tfinal, x, xhat_S, x_S)
