@@ -32,45 +32,67 @@ class KalmanFilter:
         with open(data_file_path, 'r') as data_file:
             data = json.load(data_file)
 
-        # calculate actual robot pose, used to calculate MSE
-        self._true_robot_pose = self._compute_true_robot_position(data['tf'][BASE_FOOTPRINT_TO_ODOM])
+        self._imu_data = data['imu']['data']
+        self._tf_data = data['tf']
 
-        plt.figure()
-        plt.scatter(self._true_robot_pose[:, 0], self._true_robot_pose[:, 1])
-        plt.show()
+        self.dt = 0.1  # rate of Kalman filter
 
-    
-        self._data_file = data_file  
-
-        # Time step of analysis
-        self.dt = 0.1 # (relatively slow refresh rate)
-
-        ## Prediction estimation - this is your "Priori"
-        # we will be using IMU values for the project, however in this example we
-        # use a block with a spring attached to it
-        self.xhat = np.matrix([0.5, 1, 0]).transpose() # mean(mu) estimate for the "first" step
-        self.P = 1 # covariance initial estimation between the
+        # prediction estimation - this is your "Priori"
+        self.xhat = np.array([0, 0, 0, 0, 0]).reshape((5, 1))
+        self.P = np.identity(5) # covariance initial estimation between the
         # the covariance matrix P is the weighted covariance between the
         # motion model definition - establish your robots "movement"
-        k = 1 # spring value
-        m = 10 # mass
 
-        self.A = np.matrix([[1, self.dt, 1 / 2 * self.dt ** 2], [0, 1, self.dt], [k / m, 0, 0]]) # this is the state space
-        self.B = np.matrix([0, 0, 1/m]).transpose() # this is the "input"
-        self.B = np.matrix([0, 0, 1]).transpose() # we can also treat the input as the "acceleration" for that step as calculated by an IMU!
-        self.Q = np.identity(3)*0.05 # this is the model variance/covariance (usually we treat it as the input matrix squared).
-                                     # these are the discrete components, found by performing a taylor's
-                                     # expansion on the continuous model
+        # state space equations of system (in robot frame)
+        # state vector: [x, x_dot, x_double_dot, theta, omega] 
+        # input vector: [a_x, alpha]
+        # with respect to robot frame, y_dot (and y_double_dot) is always 0
+        self.A = np.array([
+            [1, self.dt, 1/4*self.dt**2, 0, 0],
+            [0, 1, self.dt/2, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 1, self.dt/2],
+            [0, 0, 0, 0, 0]
+        ])  # state transition
+        self.B = np.array([
+            [1/4*self.dt**2, 0],
+            [1/2*self.dt, 0],
+            [1, 0],
+            [0, 1/2*self.dt],
+            [0, 1]
+        ])  # input
+        
+        # this is the model variance/covariance (usually we treat it as the input matrix squared).
+        # these are the discrete components, found by performing a taylor's
+        # expansion on the continuous model
+        var_a_x = self._imu_data[0]['linear_acceleration_covariance'][0]  # var of x about x axis
+        var_omega = self._imu_data[0]['angular_velocity_covariance'][8]  # var of z about z axis
+
+        Q_a = np.zeros((5,5))
+        Q_a[2,2] = var_a_x
+        Q_a[4,4] = var_omega
+
+        self.Q = self.A@Q_a@self.A.transpose()
+
 
         ## Measurement Model - Update component
-        self.C = np.matrix([[-1, 0, 0], [0, 0.6, 0]]) # what this represents is our "two" sensors, both with linear relationships
-                                                      # to position and velocity respectively
+        wheel_diameter = 0.072  # 72 mm
+        track = (self._tf_data[LEFT_WHEEL_TO_BASE_LINK][0]['translation'][1] -
+            self._tf_data[RIGHT_WHEEL_TO_BASE_LINK][0]['translation'][1])
+        assert track > 0
+
+        # what this represents is our "two" sensors, both with linear relationships
+        # to position and velocity respectively
+        self.C = np.array([
+            [self.dt/2, 1/2, 0, -self.dt/track, -1/track],
+            [self.dt/2, 1/2, 0, self.dt/track, 1/track],
+        ])*wheel_diameter/2
 
         # in actual environments, what this does is translate our measurement to a
         # voltage or some other metric that can be ripped directly from the sensor
         # when taking online measurements. We compare those values as our "error"
 
-        self.R = np.matrix([[0.05, 0], [0, 0.05]]) # this is the sensor model variance-usually characterized to accompany
+        self.R = np.array([[0.05, 0], [0, 0.05]]) # this is the sensor model variance-usually characterized to accompany
                                                   # the sensor model already starting
 
     """Convert orientation quaternion to robot heading"""
@@ -95,7 +117,8 @@ class KalmanFilter:
         ], np.float64)
 
     """Calculate the actual pose of the robot from tf from base footprint to odom"""
-    def _compute_true_robot_position(self, tf_base_footprint_to_odom: dict) -> np.array:
+    def _compute_true_robot_position(self) -> np.array:
+        tf_base_footprint_to_odom = self._tf_data[BASE_FOOTPRINT_TO_ODOM]
         n_points = len(tf_base_footprint_to_odom)  # number of measurements
         robot_pose = np.zeros((n_points, 3))
 
@@ -111,37 +134,41 @@ class KalmanFilter:
 
         return robot_pose
 
-
-    def run_kalman_filter(self, Tfinal):
-        T = np.arange(0, Tfinal, self.dt)
-        xhat_S = np.zeros([3, len(T) + 1])
-        x_S = np.zeros([3, len(T) + 1])
-        x = np.zeros([3, len(T) + 1])
+    def run_kalman_filter(self, t_final):
+        T = np.arange(0, t_final, self.dt)
+        
+        xhat_S = np.zeros([5, len(T) + 1])
+        x_S = np.zeros([5, len(T) + 1])
+        x = np.zeros([5, len(T) + 1])
         x[:, [0]] = self.xhat
         y = np.zeros([2, len(T)])
         y_hat = np.zeros([2, len(T)])
         for k in range(len(T)):
-            u = 0.01 # normally you'd initialise this above
+            imu_measurement = self._imu_data[k]
+            a_x = imu_measurement['linear_acceleration'][0]
+            omega = imu_measurement['angular_velocity'][2]
+
+            u = np.array([a_x, omega]).reshape((2, 1))
 
             #### Simulate motion with random motion disturbance ####
-            w = np.matrix([self.Q[0, 0] * randn(1), self.Q[1, 1] * randn(1), self.Q[2, 2] * randn(1)])
+            # w = np.matrix([self.Q[0, 0] * randn(1), self.Q[1, 1] * randn(1), self.Q[2, 2] * randn(1)])
 
             # update state - this is a simulated motion and is PURELY for fake
             # sensing and would essentially be
-            x[:, [k + 1]] = self.A * x[:, [k]] + self.B * u + w
+            # x[:, [k + 1]] = self.A * x[:, [k]] + self.B * u + w
 
             # taking a measurement - simulating a sensor
             # create our sensor disturbance
-            v = np.matrix([self.R[0, 0] * randn(1), self.R[1, 1] * randn(1)])
+            # v = np.matrix([self.R[0, 0] * randn(1), self.R[1, 1] * randn(1)])
             # create this simulated sensor measurement
-            y[:, [k]] = self.C*x[:, [k+1]] + v
+            # y[:, [k]] = self.C*x[:, [k+1]] + v
 
             #########################################
             ###### Kalman Filter Estimation #########
             #########################################
             # Prediction update
-            xhat_k = self.A * self.xhat + self.B * u # we do not put noise on our prediction
-            P_predict = self.A*self.P*self.A.transpose() + self.Q
+            xhat_k = self.A@self.xhat + self.B@u # we do not put noise on our prediction
+            P_predict = self.A@self.P@self.A.transpose() + self.Q
             # this co-variance is the prediction of essentially how the measurement and sensor model move together
             # in relation to each state and helps scale our kalman gain by giving
             # the ratio. By Definition, P is the variance of the state space, and
@@ -150,7 +177,7 @@ class KalmanFilter:
             # expand its uncertainty as well
 
             # Measurement Update and Kalman Gain
-            K = P_predict * self.C.transpose()*np.linalg.inv(self.C*P_predict*self.C.transpose() + self.R)
+            K = P_predict@self.C.transpose()@np.linalg.inv(self.C@P_predict@self.C.transpose() + self.R)
             # the pseudo inverse of the measurement model, as it relates to the model covariance
             # if we don't have a measurement for velocity, the P-matrix tells the
             # measurement model how the two should move together (and is normalised
@@ -161,14 +188,14 @@ class KalmanFilter:
             # measurement and motion model perspective, with a moving scalar to
             # help drive that relationship towards zero (P should stabilise).
 
-            self.xhat = xhat_k + K * (y[:, [k]] - self.C * xhat_k)
-            self.P = (1 - K * self.C) * P_predict # the full derivation for this is kind of complex relying on
+            self.xhat = xhat_k + K@(y[:, [k]] - self.C@xhat_k)
+            self.P = (1 - K@self.C)@P_predict # the full derivation for this is kind of complex relying on
                                              # some pretty cool probability knowledge
 
             # Store estimate
             xhat_S[:, [k]] = xhat_k
             x_S[:, [k]] = self.xhat
-            y_hat[:, [k]] = self.C*self.xhat
+            y_hat[:, [k]] = self.C@self.xhat
 
         return x, xhat_S, x_S, y_hat
 
@@ -191,6 +218,11 @@ class KalmanFilter:
         plt.plot(T, x[1,1:])
         plt.plot(T, x[2,1:])
         plt.legend(['position pred.','vel pred.', 'accel pred.', 'true pos', 'true vel', 'true accel'])
+
+        # calculate actual robot pose, used to calculate MSE
+        true_robot_pose = self._compute_true_robot_position()
+        plt.figure()
+        plt.scatter(true_robot_pose[:, 0], true_robot_pose[:, 1])
 
         plt.show()
 
