@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 # custom type hints
 Quaternion = np.array
 Vector3 = np.array
+States = np.array
 
 # dictionary keys for transforms
 BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
@@ -26,7 +27,7 @@ Kalman Filter to localize turtlebot 4
 State vector: [x; x_dot; theta; omega]
 """
 class KalmanFilter:
-    def __init__(self, data_file_path):
+    def __init__(self, data_file_path: str) -> None:
 
         # read data from bagfile
         with open(data_file_path, 'r') as data_file:
@@ -35,11 +36,19 @@ class KalmanFilter:
         self._imu_data = data['imu']['data']
         self._tf_data = data['tf']
 
-        self.dt = 0.1  # rate of Kalman filter
+        self._dt = 0.1  # rate of Kalman filter
+
+        # set when KalmanFilter::run is called
+        self._t_final: float = None
+        self._T: np.array = None
+        self._state: States = None
+        self._measurement: np.array = None
+
+        self.n_states = 5
 
         # prediction estimation - this is your "Priori"
-        self.xhat = np.array([0, 0, 0, 0, 0]).reshape((5, 1))
-        self.P = np.identity(5) # covariance initial estimation between the
+        self.xhat = np.array([0, 0, 0, 0, 0]).reshape((self.n_states, 1))
+        self.P = np.identity(self.n_states) # covariance initial estimation between the
         # the covariance matrix P is the weighted covariance between the
         # motion model definition - establish your robots "movement"
 
@@ -48,17 +57,17 @@ class KalmanFilter:
         # input vector: [a_x, alpha]
         # with respect to robot frame, y_dot (and y_double_dot) is always 0
         self.A = np.array([
-            [1, self.dt, 1/4*self.dt**2, 0, 0],
-            [0, 1, self.dt/2, 0, 0],
+            [1, self._dt, 1/4*self._dt**2, 0, 0],
+            [0, 1, self._dt/2, 0, 0],
             [0, 0, 0, 0, 0],
-            [0, 0, 0, 1, self.dt/2],
+            [0, 0, 0, 1, self._dt/2],
             [0, 0, 0, 0, 0]
         ])  # state transition
         self.B = np.array([
-            [1/4*self.dt**2, 0],
-            [1/2*self.dt, 0],
+            [1/4*self._dt**2, 0],
+            [1/2*self._dt, 0],
             [1, 0],
-            [0, 1/2*self.dt],
+            [0, 1/2*self._dt],
             [0, 1]
         ])  # input
         
@@ -68,12 +77,11 @@ class KalmanFilter:
         var_a_x = self._imu_data[0]['linear_acceleration_covariance'][0]  # var of x about x axis
         var_omega = self._imu_data[0]['angular_velocity_covariance'][8]  # var of z about z axis
 
-        Q_a = np.zeros((5,5))
+        Q_a = np.zeros((self.n_states, self.n_states))
         Q_a[2,2] = var_a_x
         Q_a[4,4] = var_omega
 
         self.Q = self.A@Q_a@self.A.transpose()
-
 
         ## Measurement Model - Update component
         wheel_diameter = 0.072  # 72 mm
@@ -84,8 +92,8 @@ class KalmanFilter:
         # what this represents is our "two" sensors, both with linear relationships
         # to position and velocity respectively
         self.C = np.array([
-            [self.dt/2, 1/2, 0, -self.dt/track, -1/track],
-            [self.dt/2, 1/2, 0, self.dt/track, 1/track],
+            [self._dt/2, 1/2, 0, -self._dt/track, -1/track],
+            [self._dt/2, 1/2, 0, self._dt/track, 1/track],
         ])*wheel_diameter/2
 
         # in actual environments, what this does is translate our measurement to a
@@ -94,6 +102,61 @@ class KalmanFilter:
 
         self.R = np.array([[0.05, 0], [0, 0.05]]) # this is the sensor model variance-usually characterized to accompany
                                                   # the sensor model already starting
+
+    def run(self, t_final: float) -> States:      
+        # store timesteps of particle filter
+        # TODO: maybe update this with actual times of particle filter
+        self._t_final = t_final
+        self._T = np.arange(0, self._t_final, self._dt)
+
+        # store state for each iteration of particle filter
+        self._state = np.zeros((len(self._T) + 1, self.n_states))
+        self._measurement = np.zeros((len(self._T) + 1, 2))
+
+        for k in range(len(self._T)):
+            imu_measurement = self._imu_data[k]
+            a_x = imu_measurement['linear_acceleration'][0]
+            omega = imu_measurement['angular_velocity'][2]
+
+            u = np.array([a_x, omega]).reshape((2, 1))
+
+            # read measurement
+            x_pos = 0.03
+            y_pos = 0
+            self._measurement[k, :] = np.array([x_pos, y_pos]).reshape((1, 2))
+
+            #########################################
+            ###### Kalman Filter Estimation #########
+            #########################################
+            # Prediction update
+            xhat_k = self.A@self.xhat + self.B@u # we do not put noise on our prediction
+            P_predict = self.A@self.P@self.A.transpose() + self.Q
+            # this co-variance is the prediction of essentially how the measurement and sensor model move together
+            # in relation to each state and helps scale our kalman gain by giving
+            # the ratio. By Definition, P is the variance of the state space, and
+            # by applying it to the motion model we're getting a motion uncertainty
+            # which can be propogated and applied to the measurement model and
+            # expand its uncertainty as well
+
+            # Measurement Update and Kalman Gain
+            K = P_predict@self.C.transpose()@np.linalg.inv(self.C@P_predict@self.C.transpose() + self.R)
+            # the pseudo inverse of the measurement model, as it relates to the model covariance
+            # if we don't have a measurement for velocity, the P-matrix tells the
+            # measurement model how the two should move together (and is normalised
+            # in the process with added noise), which is how the kalman gain is
+            # created --> detailing "how" the error should be scaled based on the
+            # covariance. If you expand P_predict out, it's clearly the
+            # relationship and cross-projected relationships, of the states from a
+            # measurement and motion model perspective, with a moving scalar to
+            # help drive that relationship towards zero (P should stabilise).
+
+            y_k = self._measurement[k, :].T.reshape((2,1))
+            self.xhat = xhat_k + K@(y_k - self.C@xhat_k)
+            self.P = (1 - K@self.C)@P_predict
+
+            self._state[k, :] = self.xhat.T  # store state
+
+        return self._state
 
     """Convert orientation quaternion to robot heading"""
     def orientation_to_heading(self, orientation: Quaternion) -> float:
@@ -134,104 +197,60 @@ class KalmanFilter:
 
         return robot_pose
 
-    def run_kalman_filter(self, t_final):
-        T = np.arange(0, t_final, self.dt)
+    def _transform_state_to_world(self) -> np.array:
+        pose = np.zeros((len(self._state), 3))
+
+        for i in range(1, len(self._state)):
+            prev_state = self._state[i-1,:].T
+            cur_state = self._state[i,:].T
+
+            pose[i, 0] = cur_state[0]
+            pose[i, 1] = pose[i-1, 1] + (prev_state[1]*self._dt*np.sin(prev_state[3]))
+            pose[i, 2] = cur_state[3]
         
-        xhat_S = np.zeros([5, len(T) + 1])
-        x_S = np.zeros([5, len(T) + 1])
-        x = np.zeros([5, len(T) + 1])
-        x[:, [0]] = self.xhat
-        y = np.zeros([2, len(T)])
-        y_hat = np.zeros([2, len(T)])
-        for k in range(len(T)):
-            imu_measurement = self._imu_data[k]
-            a_x = imu_measurement['linear_acceleration'][0]
-            omega = imu_measurement['angular_velocity'][2]
+        return pose
 
-            u = np.array([a_x, omega]).reshape((2, 1))
+    def _transform_measured_to_world(self) -> np.array:
+        pose = np.zeros((len(self._measurement), 3))
 
-            #### Simulate motion with random motion disturbance ####
-            # w = np.matrix([self.Q[0, 0] * randn(1), self.Q[1, 1] * randn(1), self.Q[2, 2] * randn(1)])
+        for i in range(1, len(self._measurement)):
+            prev_measure = self._measurement[i-1,:].T
+            cur_measure = self._measurement[i,:].T
 
-            # update state - this is a simulated motion and is PURELY for fake
-            # sensing and would essentially be
-            # x[:, [k + 1]] = self.A * x[:, [k]] + self.B * u + w
+            pose[i, 0] = cur_measure[0]
+            pose[i, 1] = pose[i-1, 1] + (prev_measure[1]*self._dt)
+        
+        return pose
 
-            # taking a measurement - simulating a sensor
-            # create our sensor disturbance
-            # v = np.matrix([self.R[0, 0] * randn(1), self.R[1, 1] * randn(1)])
-            # create this simulated sensor measurement
-            # y[:, [k]] = self.C*x[:, [k+1]] + v
-
-            #########################################
-            ###### Kalman Filter Estimation #########
-            #########################################
-            # Prediction update
-            xhat_k = self.A@self.xhat + self.B@u # we do not put noise on our prediction
-            P_predict = self.A@self.P@self.A.transpose() + self.Q
-            # this co-variance is the prediction of essentially how the measurement and sensor model move together
-            # in relation to each state and helps scale our kalman gain by giving
-            # the ratio. By Definition, P is the variance of the state space, and
-            # by applying it to the motion model we're getting a motion uncertainty
-            # which can be propogated and applied to the measurement model and
-            # expand its uncertainty as well
-
-            # Measurement Update and Kalman Gain
-            K = P_predict@self.C.transpose()@np.linalg.inv(self.C@P_predict@self.C.transpose() + self.R)
-            # the pseudo inverse of the measurement model, as it relates to the model covariance
-            # if we don't have a measurement for velocity, the P-matrix tells the
-            # measurement model how the two should move together (and is normalised
-            # in the process with added noise), which is how the kalman gain is
-            # created --> detailing "how" the error should be scaled based on the
-            # covariance. If you expand P_predict out, it's clearly the
-            # relationship and cross-projected relationships, of the states from a
-            # measurement and motion model perspective, with a moving scalar to
-            # help drive that relationship towards zero (P should stabilise).
-
-            self.xhat = xhat_k + K@(y[:, [k]] - self.C@xhat_k)
-            self.P = (1 - K@self.C)@P_predict # the full derivation for this is kind of complex relying on
-                                             # some pretty cool probability knowledge
-
-            # Store estimate
-            xhat_S[:, [k]] = xhat_k
-            x_S[:, [k]] = self.xhat
-            y_hat[:, [k]] = self.C@self.xhat
-
-        return x, xhat_S, x_S, y_hat
-
-    def plot_results(self, Tfinal, x, xhat_S, x_S):
-        T = np.arange(0, Tfinal, self.dt)
-        plt.figure()
-        plt.plot(T, x_S[0,0:-1])
-        plt.plot(T, x_S[1,0:-1])
-        plt.plot(T, x_S[2,0:-1])
-        plt.plot(T, x[0,1:])
-        plt.plot(T, x[1,1:])
-        plt.plot(T, x[2,1:])
-        plt.legend(['position est.','vel estimate', 'accel est', 'true pos', 'true vel', 'true accel'])
+    def plot_results(self):
 
         plt.figure()
-        plt.plot(T, xhat_S[0,0:-1])
-        plt.plot(T, xhat_S[1,0:-1])
-        plt.plot(T, xhat_S[2,0:-1])
-        plt.plot(T, x[0,1:])
-        plt.plot(T, x[1,1:])
-        plt.plot(T, x[2,1:])
-        plt.legend(['position pred.','vel pred.', 'accel pred.', 'true pos', 'true vel', 'true accel'])
 
         # calculate actual robot pose, used to calculate MSE
         true_robot_pose = self._compute_true_robot_position()
-        plt.figure()
         plt.scatter(true_robot_pose[:, 0], true_robot_pose[:, 1])
+
+        # calculate the estimated pose in the world frame
+        robot_pose = self._transform_state_to_world()
+        plt.scatter(robot_pose[:, 0], robot_pose[:, 1])
+
+        # calculate the measured pose in the world frame
+        measured_pose = self._transform_state_to_world()
+        plt.scatter(measured_pose[:, 0], measured_pose[:, 1])
+
+        plt.legend([
+            'true position',
+            'predicted position',
+            'measured position',
+        ])
 
         plt.show()
 
 def main():
     print("MTE544 Final Project - Kalman Filter")
     kf = KalmanFilter('path.json')
-    Tfinal = 10
-    x, xhat_S, x_S, y_hat = kf.run_kalman_filter(Tfinal)
-    kf.plot_results(Tfinal, x, xhat_S, x_S)
+    kf.run(10)
+    kf.plot_results()
 
 if __name__ == '__main__':
     main()
