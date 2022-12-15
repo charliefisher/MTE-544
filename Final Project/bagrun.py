@@ -5,15 +5,17 @@ from rclpy.node import Node
 from rclpy.qos import ReliabilityPolicy, QoSProfile
 
 # import messages
+from builtin_interfaces.msg import Time
 from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import Transform, Vector3, Quaternion
-from sensor_msgs.msg import Imu, JointState
+from sensor_msgs.msg import Imu
+from nav_msgs.msg import Odometry
 
 
 TF_COUNT: int = 1287
 TF_STATIC_COUNT: int = 1
 IMU_COUNT: int = 5280
-ENCODER_COUNT: int = 776
+ODOM_COUNT: int = 776
 
 BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
 LEFT_WHEEL_TO_BASE_LINK: str = 'left_wheel_to_base'
@@ -45,7 +47,7 @@ class Bagreader(Node):
             QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT)
         )
         self.imu_sub = self.create_subscription(
-            JointState, '/joint_states', self.encoder_callback,
+            Odometry, '/odom', self.odom_callback,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         )
         
@@ -57,12 +59,12 @@ class Bagreader(Node):
             },
             'tf_static': {},
             'imu': {},
-            'encoder': {},
+            'odom': {},
         }
         self.tf_msg_count = 0
         self.tf_static_msg_count = 0
         self.imu_msg_count = 0
-        self.encoder_msg_count = 0
+        self.odom_msg_count = 0
 
     def serialize_vector3(self, vec: Vector3) -> tuple:
         return (vec.x, vec.y, vec.z)
@@ -76,20 +78,26 @@ class Bagreader(Node):
             'rotation': self.serialize_quaternion(transform.rotation),
         }
 
+    def serialize_time(self, time: Time) -> int:
+        return rclpy.time.Time.from_msg(time).nanoseconds
+
     def tf_callback(self, msg: TFMessage) -> None:
         for tf in msg.transforms:
             if tf.header.frame_id == 'odom' and tf.child_frame_id == 'base_footprint':
-                self.data['tf'][BASE_FOOTPRINT_TO_ODOM].append(
-                    self.serialize_transform(tf.transform)
-                )
+                self.data['tf'][BASE_FOOTPRINT_TO_ODOM].append({
+                    'time': self.serialize_time(tf.header.stamp),
+                    'transform': self.serialize_transform(tf.transform),
+                })
             if tf.header.frame_id == 'base_link' and tf.child_frame_id == 'wheel_left_link':
-                self.data['tf'][LEFT_WHEEL_TO_BASE_LINK].append(
-                    self.serialize_transform(tf.transform)
-                )
+                self.data['tf'][LEFT_WHEEL_TO_BASE_LINK].append({
+                    'time': self.serialize_time(tf.header.stamp),
+                    'transform': self.serialize_transform(tf.transform),
+                })
             if tf.header.frame_id == 'base_link' and tf.child_frame_id == 'wheel_right_link':
-                self.data['tf'][RIGHT_WHEEL_TO_BASE_LINK].append(
-                    self.serialize_transform(tf.transform)
-                )
+                self.data['tf'][RIGHT_WHEEL_TO_BASE_LINK].append({
+                    'time': self.serialize_time(tf.header.stamp),
+                    'transform': self.serialize_transform(tf.transform),
+                })
 
         self.tf_msg_count += 1
         self.check_complete()
@@ -108,56 +116,75 @@ class Bagreader(Node):
         self.check_complete()
 
     def imu_callback(self, msg: Imu) -> None:
+        # add frame to imu data once
         if 'frame' not in self.data['imu']:
             self.data['imu']['frame'] = msg.header.frame_id
         else:
             assert(self.data['imu']['frame'] == msg.header.frame_id)
         
+        # add covariance to imu data once
+        if 'orientation_covariance' not in self.data['imu']:
+            self.data['imu']['orientation_covariance'] = msg.orientation_covariance.tolist()
+        if 'angular_velocity_covariance' not in self.data['imu']:
+            self.data['imu']['angular_velocity_covariance'] = msg.angular_velocity_covariance.tolist()
+        if 'linear_acceleration_covariance' not in self.data['imu']:
+            self.data['imu']['linear_acceleration_covariance'] = msg.linear_acceleration_covariance.tolist()
+        
         if 'data' not in self.data['imu']:
             self.data['imu']['data'] = []
 
         self.data['imu']['data'].append({
+            'time': self.serialize_time(msg.header.stamp),
             'orientation': self.serialize_quaternion(msg.orientation),
-            'orientation_covariance': msg.orientation_covariance.tolist(),
             'angular_velocity': self.serialize_vector3(msg.angular_velocity),
-            'angular_velocity_covariance': msg.angular_velocity_covariance.tolist(),
             'linear_acceleration': self.serialize_vector3(msg.linear_acceleration),
-            'linear_acceleration_covariance': msg.linear_acceleration_covariance.tolist(),
         })
 
         self.imu_msg_count += 1
         self.check_complete()
 
-    def encoder_callback(self, msg: JointState) -> None:
-        for i, enc_name in enumerate(msg.name):
-            if enc_name not in self.data['encoder']:
-                self.data['encoder'][enc_name] = {
-                    'position': [],
-                    'velocity': [],
-                    'effort': [],
-                }
+    def odom_callback(self, msg: Odometry) -> None:
+        # add frame to odom data once
+        if 'frame' not in self.data['odom']:
+            self.data['odom']['frame'] = msg.header.frame_id
+        else:
+            assert(self.data['odom']['frame'] == msg.header.frame_id)
+        
+        # add covariance to odom data once
+        if 'pose_covariance' not in self.data['odom']:
+            self.data['odom']['pose_covariance'] = msg.pose.covariance.tolist()
+        if 'twist_covariance' not in self.data['odom']:
+            self.data['odom']['twist_covariance'] = msg.twist.covariance.tolist()
+        
+        if 'data' not in self.data['odom']:
+            self.data['odom']['data'] = []
 
-            if len(msg.position) > 0:
-                self.data['encoder'][enc_name]['position'].append(msg.position[i])
-            if len(msg.velocity) > 0:
-                self.data['encoder'][enc_name]['velocity'].append(msg.velocity[i])
-            if len(msg.effort) > 0:
-                self.data['encoder'][enc_name]['effort'].append(msg.effort[i])
+        self.data['odom']['data'].append({
+            'time': self.serialize_time(msg.header.stamp),
+            'pose': {
+                'position': self.serialize_vector3(msg.pose.pose.position),
+                'orientation': self.serialize_quaternion(msg.pose.pose.orientation),
+            },
+            'twist': {
+                'linear': self.serialize_vector3(msg.twist.twist.linear),
+                'angular': self.serialize_vector3(msg.twist.twist.angular),
+            },
+        })
 
-        self.encoder_msg_count += 1
+        self.odom_msg_count += 1
         self.check_complete()
 
     def check_complete(self) -> None:
-        total_msg_count: int = self.tf_msg_count + self.tf_static_msg_count + self.imu_msg_count + self.encoder_msg_count
+        total_msg_count: int = self.tf_msg_count + self.tf_static_msg_count + self.imu_msg_count + self.odom_msg_count
         if total_msg_count % 500 == 0:
             self.get_logger().info('Read {} messages'.format(total_msg_count))
 
-        # self.get_logger().info('{} {} {}'.format(self.tf_msg_count, self.imu_msg_count, self.encoder_msg_count))
+        # self.get_logger().info('{} {} {}'.format(self.tf_msg_count, self.imu_msg_count, self.odom_msg_count))
 
         if (self.tf_msg_count == TF_COUNT and
             self.tf_static_msg_count == TF_STATIC_COUNT and
             self.imu_msg_count == IMU_COUNT and
-            self.encoder_msg_count == ENCODER_COUNT):
+            self.odom_msg_count == ODOM_COUNT):
             
             # export data to json
             self.get_logger().info('Exporting data...')
