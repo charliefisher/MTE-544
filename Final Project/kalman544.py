@@ -47,7 +47,6 @@ class KalmanFilter:
         self._dt = 0.034  # rate of Kalman filter (seconds)
 
         # set when KalmanFilter::run is called
-        self._t_final: float = None
         self._T: np.array = None
         self._state: States = None
         self._measurement: np.array = None
@@ -149,17 +148,16 @@ class KalmanFilter:
         y_dot = closest_measurement['twist']['linear'][1]
         return np.array([x, x_dot, y, y_dot, omega]).reshape((KalmanFilter.N_STATES, 1))
 
-    def run(self, t_final: float) -> States:      
-        # store timesteps of particle filter
-        # TODO: maybe update this with actual times of particle filter
-        self._t_final = t_final
-        self._T = np.arange(0, self._t_final, self._dt)
+    def run(self) -> States:
+        n_data_points = len(self._odom_data)
 
-        # store state for each iteration of particle filter
-        self._state = np.zeros((len(self._T) + 1, KalmanFilter.N_STATES))
-        self._measurement = np.zeros((len(self._T) + 1, KalmanFilter.N_STATES))
+        # store timesteps and state for each iteration of particle filter
+        self._T = self._dt*np.arange(0, n_data_points)
+        self._state = np.zeros((n_data_points, KalmanFilter.N_STATES))
+        self._measurement = np.zeros((n_data_points, KalmanFilter.N_STATES))
 
-        for k, t in enumerate(self._T):
+        t = 0
+        for k in range(n_data_points):  # for each sensor measurement
             imu_measurement = self._imu_data[k]
             a_x = imu_measurement['linear_acceleration'][0]
             a_y = imu_measurement['linear_acceleration'][1]
@@ -201,6 +199,8 @@ class KalmanFilter:
 
             self._state[k, :] = self.xhat.T  # store state
 
+            t += self._dt # increment elapsed time
+
         return self._state
 
     """Convert orientation quaternion to robot heading"""
@@ -231,11 +231,20 @@ class KalmanFilter:
     """Calculate the actual pose of the robot from tf from base footprint to odom"""
     def _compute_true_robot_position(self) -> tuple[np.array, np.array]:
         tf_base_footprint_to_odom = self._tf_data[BASE_FOOTPRINT_TO_ODOM]
+        # tf has 1 extra message than odom, drop it so plots are equal
+        # this also avoids an error when calculating MSE
+        tf_base_footprint_to_odom = tf_base_footprint_to_odom[0:len(self._odom_data)]
+        # check tf and odom timestamps match
+        # i.e. ground truth corresponds to correct measurements
+        assert(len(tf_base_footprint_to_odom) == len(self._odom_data))
+        assert(tf_base_footprint_to_odom[0]['time'] == self._odom_data[0]['time'])
+        assert(tf_base_footprint_to_odom[-1]['time'] == self._odom_data[-1]['time'])
+
         n_points = len(tf_base_footprint_to_odom)  # number of measurements
         t = np.zeros((n_points, 1))
         robot_pose = np.zeros((n_points, 3))
 
-        origin = np.array([0, 0, 1])  # homogenous coordinate of origin
+        origin = np.array([0, 0, 1]).reshape((3, 1))  # homogenous coordinate of origin
 
         for i, tf in enumerate(tf_base_footprint_to_odom):
             # compute transform for current pose
@@ -244,39 +253,23 @@ class KalmanFilter:
             )
             # transform origin in base footprint frame to odom frame
             bf_pose_in_odom = bf_to_odom@origin
+
+            # replace homogenous coordinate with theta
+            print('y', bf_to_odom[1,2], 'x', bf_to_odom[0,2])
+            bf_pose_in_odom[2] = math.atan2(bf_to_odom[1,2], bf_to_odom[0,2])
+            
             # store robot pose in odom frame
-            robot_pose[i] = bf_pose_in_odom
+            robot_pose[i] = bf_pose_in_odom.T
             t[i] = (tf['time'] - tf_base_footprint_to_odom[0]['time']) / (1e9)
 
         return (t, robot_pose)
 
-    def _transform_state_to_world(self) -> np.array:
-        pose = np.zeros((len(self._state), 3))
+    def _mse(self, true, filter) -> float:
+        return np.mean(np.square(filter - true))
 
-        for i in range(1, len(self._state)):
-            prev_state = self._state[i-1,:].T
-            cur_state = self._state[i,:].T
+    def results(self) -> tuple[float, float, float]:
 
-            pose[i, 0] = cur_state[0]
-            pose[i, 1] = pose[i-1, 1] + (prev_state[1]*self._dt*np.sin(prev_state[3]))
-            pose[i, 2] = cur_state[3]
-        
-        return pose
-
-    def _transform_measured_to_world(self) -> np.array:
-        pose = np.zeros((len(self._measurement), 3))
-
-        for i in range(1, len(self._measurement)):
-            prev_measure = self._measurement[i-1,:].T
-            cur_measure = self._measurement[i,:].T
-
-            pose[i, 0] = cur_measure[0]
-            pose[i, 1] = pose[i-1, 1] + (prev_measure[1]*self._dt)
-        
-        return pose
-
-    def plot_results(self):
-
+        # plot planar position
         plt.figure()
 
         # calculate actual robot pose, used to calculate MSE
@@ -285,7 +278,6 @@ class KalmanFilter:
         plt.colorbar(label='Time (s)')
 
         # calculate the estimated pose in the world frame
-        robot_pose = self._transform_state_to_world()
         plt.scatter(self._state[:, 0], self._state[:, 2], c='r', s=5)
 
         # # calculate the measured pose in the world frame
@@ -293,18 +285,50 @@ class KalmanFilter:
         # plt.scatter(measured_pose[:, 0], measured_pose[:, 1])
 
         plt.legend([
-            'true position',
-            'predicted position',
-            'measured position',
+            'True Position',
+            'Predicted Position',
+            'Measured Position',
         ])
 
+        # plot each pose variable with respect to times
+        _, (ax1, ax2, ax3) = plt.subplots(3, 1)
+
+        ax1.plot(t, true_robot_pose[:, 0])
+        ax1.plot(self._T, self._state[:, 0])
+        ax1.set_ylabel('x (m)')
+        ax1.set_xlabel('Time (s)')
+
+        ax2.plot(t, true_robot_pose[:, 1])
+        ax2.plot(self._T, self._state[:, 2])
+        ax2.set_ylabel('y (m)')
+        ax2.set_xlabel('Time (s)')
+
+        ax3.plot(t, true_robot_pose[:, 2])
+        ax3.plot(self._T, self._state[:, 4])
+        ax3.set_ylabel('Theta (rad)')
+        ax3.set_xlabel('Time (s)')
+
+        plt.figlegend(['True Position', 'Predicted Position'])
+
+        x_mse = self._mse(true_robot_pose[:, 0], self._state[:, 0])
+        y_mse = self._mse(true_robot_pose[:, 1], self._state[:, 2])
+        theta_mse = self._mse(true_robot_pose[:, 2], self._state[:, 4])
+        print('----- Mean Squared Error (MSE) -----')
+        print('  X:', x_mse)
+        print('  Y:', y_mse)
+        print('  Theta:', theta_mse)
+
         plt.show()
+
+        
+
 
 def main():
     print("MTE544 Final Project - Kalman Filter")
     kf = KalmanFilter('path.json')
-    kf.run(10)
-    kf.plot_results()
+    kf.run()
+    kf.results()
+
 
 if __name__ == '__main__':
     main()
