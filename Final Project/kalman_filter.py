@@ -50,7 +50,6 @@ class KalmanFilter:
         # set when KalmanFilter::run is called
         self._T: np.array = None
         self._state: States = None
-        self._measurement: np.array = None  # TODO: maybe remove me
 
         # prediction estimation - this is your "Priori"
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
@@ -124,27 +123,25 @@ class KalmanFilter:
         assert(np.array_equal(self.R, np.diagflat(np.diag(self.R))))
 
     """Finds the most recent measurement from /odom given a time"""
-    def _get_closest_measurement(self, t: float) -> Measurement:
-        closest_measurement = None
+    def _get_closest_input(self, t: float) -> Measurement:
+        closest_input = None
 
-        measurement_start_time = self._odom_data[0]['time']
-        for measurument in self._odom_data:
+        input_start_time = self._imu_data[0]['time']
+        for input in self._imu_data:
             # compute elapsed time in seconds (convert from ns)
-            elapsed_time = (measurument['time'] - measurement_start_time) / (1e9)
+            elapsed_time = (input['time'] - input_start_time) / (1e9)
             if elapsed_time <= t:
-                closest_measurement = measurument
+                closest_input = input
             else:
                 break
 
-        assert(closest_measurement is not None)  # should always find a measurement
+        assert(closest_input is not None)  # should always find a measurement
 
-        # extract state variables from measurement
-        x = closest_measurement['pose']['position'][0]
-        y = closest_measurement['pose']['position'][1]
-        omega = self.orientation_to_heading(closest_measurement['pose']['orientation'])
-        x_dot = closest_measurement['twist']['linear'][0]
-        y_dot = closest_measurement['twist']['linear'][1]
-        return np.array([x, x_dot, y, y_dot, omega]).reshape((KalmanFilter.N_STATES, 1))
+        # extract input variables
+        a_x = closest_input['linear_acceleration'][0]
+        a_y = closest_input['linear_acceleration'][1]
+        omega = closest_input['angular_velocity'][2]
+        return np.array([a_x, a_y, omega]).reshape((3, 1))
 
     def run(self) -> States:
         n_data_points = len(self._odom_data)
@@ -152,23 +149,20 @@ class KalmanFilter:
         # store timesteps and state for each iteration of Kalman filter
         self._T = self._dt*np.arange(0, n_data_points)
         self._state = np.zeros((n_data_points, KalmanFilter.N_STATES))
-        self._measurement = np.zeros((n_data_points, KalmanFilter.N_STATES))
 
         t = 0
         for k in range(n_data_points):  # for each sensor measurement
             # get input
-            imu_measurement = self._imu_data[k]
-            a_x = imu_measurement['linear_acceleration'][0]
-            a_y = imu_measurement['linear_acceleration'][1]
-            omega = imu_measurement['angular_velocity'][2]
-
-            print(t, np.round_(omega, 3))
-
-            u = np.array([a_x, a_y, omega]).reshape((3, 1))
+            u = self._get_closest_input(t)
 
             # read measurement
-            y_k = self._get_closest_measurement(t)
-            self._measurement[k, :] = y_k.T
+            y_k = np.array([
+                self._odom_data[k]['pose']['position'][0],
+                self._odom_data[k]['twist']['linear'][0],
+                self._odom_data[k]['pose']['position'][1],
+                self._odom_data[k]['twist']['linear'][1],
+                self.orientation_to_heading(self._odom_data[k]['pose']['orientation']),
+            ]).reshape((KalmanFilter.N_STATES, 1))
 
             #########################################
             ###### Kalman Filter Estimation #########
