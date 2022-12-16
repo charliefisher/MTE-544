@@ -11,6 +11,7 @@ import numpy as np
 from numpy.random import randn
 import matplotlib.pyplot as plt
 
+
 # custom type hints
 Quaternion = np.array
 Vector3 = np.array
@@ -43,13 +44,13 @@ class KalmanFilter:
 
         # imu messages posted at 5ms intervals
         # tf and odom messages posted at 34ms is 34
-        # run the Kalman Filter at the slower of the two, 34 ms or
+        # run the Kalman Filter at the slower of the two, 34 ms or 0.034 s
         self._dt = 0.034  # rate of Kalman filter (seconds)
 
         # set when KalmanFilter::run is called
         self._T: np.array = None
         self._state: States = None
-        self._measurement: np.array = None
+        self._measurement: np.array = None  # TODO: maybe remove me
 
         # prediction estimation - this is your "Priori"
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
@@ -57,10 +58,9 @@ class KalmanFilter:
         # the covariance matrix P is the weighted covariance between the
         # motion model definition - establish your robots "movement"
 
-        # state space equations of system (in robot frame)
-        # state vector: [x, x_dot, x_double_dot, theta, omega] 
-        # input vector: [a_x, alpha]
-        # with respect to robot frame, y_dot (and y_double_dot) is always 0
+        # state space equations of system (in global frame)
+        # state vector: [x, x_dot, y, y_dot, theta] 
+        # input vector: [a_x, a_y, omega]
         self.A = np.array([
             [1, self._dt, 0, 0, 0],
             [0, 1, 0, 0, 0],
@@ -123,22 +123,20 @@ class KalmanFilter:
         self.R[4,4] = cov_rot_z_z
         assert(np.array_equal(self.R, np.diagflat(np.diag(self.R))))
 
-        # self.R = np.array([[0.05, 0], [0, 0.05]]) # this is the sensor model variance-usually characterized to accompany
-                                                  # the sensor model already starting
-
     """Finds the most recent measurement from /odom given a time"""
     def _get_closest_measurement(self, t: float) -> Measurement:
         closest_measurement = None
 
         measurement_start_time = self._odom_data[0]['time']
         for measurument in self._odom_data:
+            # compute elapsed time in seconds (convert from ns)
             elapsed_time = (measurument['time'] - measurement_start_time) / (1e9)
             if elapsed_time <= t:
                 closest_measurement = measurument
             else:
                 break
 
-        assert(closest_measurement is not None)
+        assert(closest_measurement is not None)  # should always find a measurement
 
         # extract state variables from measurement
         x = closest_measurement['pose']['position'][0]
@@ -151,17 +149,20 @@ class KalmanFilter:
     def run(self) -> States:
         n_data_points = len(self._odom_data)
 
-        # store timesteps and state for each iteration of particle filter
+        # store timesteps and state for each iteration of Kalman filter
         self._T = self._dt*np.arange(0, n_data_points)
         self._state = np.zeros((n_data_points, KalmanFilter.N_STATES))
         self._measurement = np.zeros((n_data_points, KalmanFilter.N_STATES))
 
         t = 0
         for k in range(n_data_points):  # for each sensor measurement
+            # get input
             imu_measurement = self._imu_data[k]
             a_x = imu_measurement['linear_acceleration'][0]
             a_y = imu_measurement['linear_acceleration'][1]
             omega = imu_measurement['angular_velocity'][2]
+
+            print(t, np.round_(omega, 3))
 
             u = np.array([a_x, a_y, omega]).reshape((3, 1))
 
@@ -255,8 +256,10 @@ class KalmanFilter:
             bf_pose_in_odom = bf_to_odom@origin
 
             # replace homogenous coordinate with theta
-            print('y', bf_to_odom[1,2], 'x', bf_to_odom[0,2])
-            bf_pose_in_odom[2] = math.atan2(bf_to_odom[1,2], bf_to_odom[0,2])
+            # bf_to_odom = np.round_(bf_to_odom, 5)
+            # print('y', bf_to_odom[1,2], 'x', bf_to_odom[0,2])
+            # bf_pose_in_odom[2] = math.atan2(bf_to_odom[1,2], bf_to_odom[0,2])
+            bf_pose_in_odom[2] = self.orientation_to_heading(tf['transform']['rotation'])
             
             # store robot pose in odom frame
             robot_pose[i] = bf_pose_in_odom.T
@@ -268,29 +271,17 @@ class KalmanFilter:
         return np.mean(np.square(filter - true))
 
     def results(self) -> tuple[float, float, float]:
+        # calculate actual robot pose, used to calculate MSE
+        t, true_robot_pose = self._compute_true_robot_position()
 
         # plot planar position
         plt.figure()
-
-        # calculate actual robot pose, used to calculate MSE
-        t, true_robot_pose = self._compute_true_robot_position()
-        plt.scatter(true_robot_pose[:, 0], true_robot_pose[:, 1], c=t, s=5)
+        plt.scatter(true_robot_pose[:, 0], true_robot_pose[:, 1], c=t, s=1)
+        plt.scatter(self._state[:, 0], self._state[:, 2], c='r', s=1)
         plt.colorbar(label='Time (s)')
+        plt.legend(['True Position', 'Predicted Position'])
 
-        # calculate the estimated pose in the world frame
-        plt.scatter(self._state[:, 0], self._state[:, 2], c='r', s=5)
-
-        # # calculate the measured pose in the world frame
-        # measured_pose = self._transform_state_to_world()
-        # plt.scatter(measured_pose[:, 0], measured_pose[:, 1])
-
-        plt.legend([
-            'True Position',
-            'Predicted Position',
-            'Measured Position',
-        ])
-
-        # plot each pose variable with respect to times
+        # plot each pose variable with respect to time
         _, (ax1, ax2, ax3) = plt.subplots(3, 1)
 
         ax1.plot(t, true_robot_pose[:, 0])
@@ -310,6 +301,7 @@ class KalmanFilter:
 
         plt.figlegend(['True Position', 'Predicted Position'])
 
+        # calculate MSE
         x_mse = self._mse(true_robot_pose[:, 0], self._state[:, 0])
         y_mse = self._mse(true_robot_pose[:, 1], self._state[:, 2])
         theta_mse = self._mse(true_robot_pose[:, 2], self._state[:, 4])
@@ -320,7 +312,7 @@ class KalmanFilter:
 
         plt.show()
 
-        
+        return (x_mse, y_mse, theta_mse) # return MSE for each pose variable
 
 
 def main():
