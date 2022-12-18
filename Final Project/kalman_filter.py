@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Kalman Filter implementation based on example code provided on LEARN
+Kalman filter implementation based on example code provided on LEARN
 """
 
 import json
@@ -16,16 +16,13 @@ import matplotlib.pyplot as plt
 Quaternion = np.array
 Vector3 = np.array
 States = np.array
-Measurement = np.array
 
 # dictionary keys for transforms
 BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
-LEFT_WHEEL_TO_BASE_LINK: str = 'left_wheel_to_base'
-RIGHT_WHEEL_TO_BASE_LINK: str = 'right_wheel_to_base'
 
 
 """
-Kalman Filter to localize turtlebot 4
+Kalman filter to localize TurtleBot 3
 State vector: [x; x_dot; y; y_dot; theta]
 """
 class KalmanFilter:
@@ -44,18 +41,22 @@ class KalmanFilter:
 
         # imu messages posted at 5ms intervals
         # tf and odom messages posted at 34ms is 34
-        # run the Kalman Filter at the slower of the two, 34 ms or 0.034 s
+        # run the Kalman filter at the slower of the two, 34 ms or 0.034 s
         self._dt = 0.034  # rate of Kalman filter (seconds)
 
         # set when KalmanFilter::run is called
+        # stores the timestamp (starting from zero) and the state of each iteration
         self._T: np.array = None
         self._state: States = None
 
         # prediction estimation - this is your "Priori"
+        # robot starts from rest at (0, 0), pointing forward
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
-        self.P = np.identity(KalmanFilter.N_STATES) # covariance initial estimation between the
+        self.P = np.identity(KalmanFilter.N_STATES) # covariance initial estimation
         # the covariance matrix P is the weighted covariance between the
         # motion model definition - establish your robots "movement"
+
+        ## Motion Model ##
 
         # state space equations of system (in global frame)
         # state vector: [x, x_dot, y, y_dot, theta] 
@@ -75,33 +76,31 @@ class KalmanFilter:
             [0, 0, self._dt]
         ])  # input
         
-        # this is the model variance/covariance (usually we treat it as the input matrix squared).
-        # these are the discrete components, found by performing a taylor's
-        # expansion on the continuous model
-        var_a_x = self._imu['linear_acceleration_covariance'][0]  # var of x about x axis
-        var_a_y = self._imu['linear_acceleration_covariance'][4]  # var of y about y axis
-        var_a = np.sqrt(var_a_x**2 + var_a_y**2)
+        # model covariance
+        var_a = self._imu['linear_acceleration_covariance'][0]  # var of x about x axis
         var_omega = self._imu['angular_velocity_covariance'][8]  # var of z about z axis
+        # NOTE: var_a and var_omega are in the robots frame
+        # The angular acceleration in the robots frame is equal to the angular
+        # acceleration in the robot frame
+        # The linear acceleration in the robots frame is decomposed into its global
+        # x and y coordinates
+        # The robot acceleration in y is 0 since the TurtleBot 3 is nonholonomic
 
-        Q_a = np.array([
-            [1/2*self._dt**2*var_a, 0, 0, 0, 0],
-            [0, self._dt*var_a, 0, 0, 0],
-            [0, 0, 1/2*self._dt**2*var_a, 0, 0],
-            [0, 0, self._dt*var_a, 0, 0],
-            [0, 0, 0, 0, self._dt*var_omega],
+        self.Q = np.array([
+            [1/4*self._dt**4*var_a, 1/2*self._dt**3*var_a, 0, 0, 0],
+            [1/2*self._dt**3*var_a, self._dt**2*var_a, 0, 0, 0],
+            [0 , 0, 1/4*self._dt**4*var_a, 1/2*self._dt**3*var_a, 0],
+            [0, 0, 1/2*self._dt**3*var_a, self._dt**2*var_a, 0],
+            [0, 0, 0, 0, self._dt**2*var_omega],
         ])
-        self.Q = self.A@Q_a@self.A.transpose()
 
-        ## Measurement Model
+        ## Measurement Model ##
 
-        # states track x and y directly already, no explicit motion model
+        # measurement tracks state variables directly already
+        # no explicit measurement model
         self.C = np.identity(5)
 
-        # in actual environments, what this does is translate our measurement to a
-        # voltage or some other metric that can be ripped directly from the sensor
-        # when taking online measurements. We compare those values as our "error"
-
-        # note that both pose_covariance and twist_covariance are diagonal matrices
+        # NOTE: both pose_covariance and twist_covariance are diagonal matrices
         # thus, R will also be a diagonal matrix
         pose_covariance = np.array(self._odom['pose_covariance']).reshape((6,6))
         twist_covariance = np.array(self._odom['twist_covariance']).reshape((6,6))
@@ -110,10 +109,12 @@ class KalmanFilter:
 
         cov_x_x = pose_covariance[0,0]
         cov_y_y = pose_covariance[1,1]
-        cov_rot_z_z = pose_covariance[5,5]
+        cov_rot_z_z = twist_covariance[5,5]
         cov_xd_xd = twist_covariance[0,0]
         cov_yd_yd = twist_covariance[1,1]
 
+        # assumes measurements are independent
+        # TODO: confirm this
         self.R = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))
         self.R[0,0] = cov_x_x
         self.R[1,1] = cov_xd_xd
@@ -122,29 +123,25 @@ class KalmanFilter:
         self.R[4,4] = cov_rot_z_z
         assert(np.array_equal(self.R, np.diagflat(np.diag(self.R))))
 
-    """Finds the most recent measurement from /odom given a time"""
-    def _get_closest_input(self, t: float) -> Measurement:
+    """Finds the most recent measurement from /imu given a time"""
+    def _get_closest_input(self, t: float) -> dict:
         closest_input = None
 
         input_start_time = self._imu_data[0]['time']
         for input in self._imu_data:
             # compute elapsed time in seconds (convert from ns)
             elapsed_time = (input['time'] - input_start_time) / (1e9)
+            # update closest input and break once we passed the desired time
             if elapsed_time <= t:
                 closest_input = input
             else:
                 break
 
-        assert(closest_input is not None)  # should always find a measurement
-
-        # extract input variables
-        a_x = closest_input['linear_acceleration'][0]
-        a_y = closest_input['linear_acceleration'][1]
-        omega = closest_input['angular_velocity'][2]
-        return np.array([a_x, a_y, omega]).reshape((3, 1))
+        assert(closest_input is not None)  # should always find an input
+        return closest_input
 
     def run(self) -> States:
-        n_data_points = len(self._odom_data)
+        n_data_points = len(self._odom_data)  # run filter as long as we have measurements
 
         # store timesteps and state for each iteration of Kalman filter
         self._T = self._dt*np.arange(0, n_data_points)
@@ -153,9 +150,16 @@ class KalmanFilter:
         t = 0
         for k in range(n_data_points):  # for each sensor measurement
             # get input
-            u = self._get_closest_input(t)
+            closest_input = self._get_closest_input(t)
+            a_x_robot = closest_input['linear_acceleration'][0]
+            theta = self.xhat[4,0]
+            # decompose robot acceleration into global accelerations
+            a_x = a_x_robot*np.cos(theta)
+            a_y = a_x_robot*np.sin(theta)
+            omega = closest_input['angular_velocity'][2]
+            u = np.array([a_x, a_y, omega]).reshape((3, 1))
 
-            # read measurement
+            # get measurement
             y_k = np.array([
                 self._odom_data[k]['pose']['position'][0],
                 self._odom_data[k]['twist']['linear'][0],
@@ -164,11 +168,9 @@ class KalmanFilter:
                 self.orientation_to_heading(self._odom_data[k]['pose']['orientation']),
             ]).reshape((KalmanFilter.N_STATES, 1))
 
-            #########################################
-            ###### Kalman Filter Estimation #########
-            #########################################
-            # Prediction update
-            xhat_k = self.A@self.xhat + self.B@u # we do not put noise on our prediction
+            ## Kalman Filter Estimation ##
+            # prediction update
+            xhat_k = self.A@self.xhat + self.B@u  # no process noise on prediction
             P_predict = self.A@self.P@self.A.transpose() + self.Q
             # this co-variance is the prediction of essentially how the measurement and sensor model move together
             # in relation to each state and helps scale our kalman gain by giving
@@ -177,7 +179,7 @@ class KalmanFilter:
             # which can be propogated and applied to the measurement model and
             # expand its uncertainty as well
 
-            # Measurement Update and Kalman Gain
+            # measurement update and Kalman Gain
             K = P_predict@self.C.transpose()@np.linalg.inv(self.C@P_predict@self.C.transpose() + self.R)
             # the pseudo inverse of the measurement model, as it relates to the model covariance
             # if we don't have a measurement for velocity, the P-matrix tells the
@@ -192,7 +194,8 @@ class KalmanFilter:
             self.xhat = xhat_k + K@(y_k - self.C@xhat_k)
             self.P = (np.identity(KalmanFilter.N_STATES) - K@self.C)@P_predict
 
-            self._state[k, :] = self.xhat.T  # store state
+            # store estimated state
+            self._state[k, :] = self.xhat.T
 
             t += self._dt # increment elapsed time
 
@@ -217,13 +220,17 @@ class KalmanFilter:
         qz = rotation[2]
         qw = rotation[3]
 
+        # convert quarternion to transformation matrix
         return np.array([
             [qw**2 + qx**2 - qy**2 - qz**2, 2*(qx*qy-qz*qw), translation[0]],
             [2*(qw*qz + qx*qy), qw**2 - qx**2 + qy**2 - qz**2, translation[1]],
             [0, 0, 1]
         ], np.float64)
 
-    """Calculate the actual pose of the robot from tf from base footprint to odom"""
+    """
+    Calculate the actual pose of the robot from /tf
+    This uses the transformation from base_footprint to odom
+    """
     def _compute_true_robot_position(self) -> tuple[np.array, np.array]:
         tf_base_footprint_to_odom = self._tf_data[BASE_FOOTPRINT_TO_ODOM]
         # tf has 1 extra message than odom, drop it so plots are equal
@@ -246,59 +253,114 @@ class KalmanFilter:
             bf_to_odom = self.tf_to_homogenous(
                 tf['transform']['translation'], tf['transform']['rotation']
             )
-            # transform origin in base footprint frame to odom frame
+            # transform origin in base_footprint frame to odom frame
             bf_pose_in_odom = bf_to_odom@origin
 
             # replace homogenous coordinate with theta
-            # bf_to_odom = np.round_(bf_to_odom, 5)
-            # print('y', bf_to_odom[1,2], 'x', bf_to_odom[0,2])
-            # bf_pose_in_odom[2] = math.atan2(bf_to_odom[1,2], bf_to_odom[0,2])
             bf_pose_in_odom[2] = self.orientation_to_heading(tf['transform']['rotation'])
-            
             # store robot pose in odom frame
             robot_pose[i] = bf_pose_in_odom.T
+            # compute elapsed time for current pose
             t[i] = (tf['time'] - tf_base_footprint_to_odom[0]['time']) / (1e9)
 
         return (t, robot_pose)
 
+    """Calculate Mean-Squared Error (MSE)"""
     def _mse(self, true, filter) -> float:
         return np.mean(np.square(filter - true))
 
+    """Generate plots and report Mean-Squared Error (MSE)"""
     def results(self) -> tuple[float, float, float]:
         # calculate actual robot pose, used to calculate MSE
         t, true_robot_pose = self._compute_true_robot_position()
 
-        # plot planar position
+        # extract pose from state
+        localized_pose = np.hstack([
+            self._state[:, 0].reshape(-1, 1),
+            self._state[:, 2].reshape(-1, 1),
+            self._state[:, 4].reshape(-1, 1),
+        ])
+
+        def plot_robot_heading(state) -> None:
+            subsample_n: int = 75
+
+            state_subsampled = state[::subsample_n]
+            u = np.cos(state_subsampled[:, 2])
+            v = np.sin(state_subsampled[:, 2])
+            x = state_subsampled[:, 0]
+            y = state_subsampled[:, 1]
+            plt.quiver(x, y, u, v, angles='xy', color='tab:blue')
+
+        # plot true planar position
         plt.figure()
         plt.scatter(true_robot_pose[:, 0], true_robot_pose[:, 1], c=t, s=1)
-        plt.scatter(self._state[:, 0], self._state[:, 2], c='r', s=1)
         plt.colorbar(label='Time (s)')
-        plt.legend(['True Position', 'Predicted Position'])
+        plt.xlabel('x (m)')
+        plt.ylabel('y (m)')
+        plt.legend(['True Position'])
+        plot_robot_heading(true_robot_pose)
+
+        # plot predicted planar position
+        plt.figure()
+        plt.scatter(localized_pose[:, 0], localized_pose[:, 1], c=self._T, s=1)
+        plt.colorbar(label='Time (s)')
+        plt.xlabel('x (m)')
+        plt.ylabel('y (m)')
+        plt.legend(['Localized Position'])
+        plot_robot_heading(localized_pose)
+
+        # plot true and predicted planar position
+        plt.figure()
+        plt.plot(true_robot_pose[:, 0], true_robot_pose[:, 1])
+        plt.plot(localized_pose[:, 0], localized_pose[:, 1])
+        plt.xlabel('x (m)')
+        plt.ylabel('y (m)')
+        plt.legend(['True Position', 'Localized Position'])
 
         # plot each pose variable with respect to time
-        _, (ax1, ax2, ax3) = plt.subplots(3, 1)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1)
 
         ax1.plot(t, true_robot_pose[:, 0])
-        ax1.plot(self._T, self._state[:, 0])
+        ax1.plot(self._T, localized_pose[:, 0], linestyle='dashed')
         ax1.set_ylabel('x (m)')
         ax1.set_xlabel('Time (s)')
 
         ax2.plot(t, true_robot_pose[:, 1])
-        ax2.plot(self._T, self._state[:, 2])
+        ax2.plot(self._T, localized_pose[:, 1], linestyle='dashed')
         ax2.set_ylabel('y (m)')
         ax2.set_xlabel('Time (s)')
 
         ax3.plot(t, true_robot_pose[:, 2])
-        ax3.plot(self._T, self._state[:, 4])
+        ax3.plot(self._T, localized_pose[:, 2], linestyle='dashed')
         ax3.set_ylabel('Theta (rad)')
         ax3.set_xlabel('Time (s)')
 
         plt.figlegend(['True Position', 'Predicted Position'])
+        fig.align_ylabels()
+
+        # plot error of each pose variable with respect to time
+        error = true_robot_pose - localized_pose
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1)
+
+        ax1.plot(t, error[:, 0])
+        ax1.set_ylabel('x Error (m)')
+        ax1.set_xlabel('Time (s)')
+
+        ax2.plot(t, error[:, 1])
+        ax2.set_ylabel('y Error (m)')
+        ax2.set_xlabel('Time (s)')
+
+        ax3.plot(t, error[:, 2])
+        ax3.set_ylabel('Theta Error (rad)')
+        ax3.set_xlabel('Time (s)')
+
+        plt.subplots_adjust(left=0.175)  # fixes an issue with ylabels being cutoff
+        fig.align_ylabels()
 
         # calculate MSE
-        x_mse = self._mse(true_robot_pose[:, 0], self._state[:, 0])
-        y_mse = self._mse(true_robot_pose[:, 1], self._state[:, 2])
-        theta_mse = self._mse(true_robot_pose[:, 2], self._state[:, 4])
+        x_mse = self._mse(true_robot_pose[:, 0], localized_pose[:, 0])
+        y_mse = self._mse(true_robot_pose[:, 1], localized_pose[:, 1])
+        theta_mse = self._mse(true_robot_pose[:, 2], localized_pose[:, 2])
         print('----- Mean Squared Error (MSE) -----')
         print('  X:', x_mse)
         print('  Y:', y_mse)
@@ -310,7 +372,6 @@ class KalmanFilter:
 
 
 def main():
-    print("MTE544 Final Project - Kalman Filter")
     kf = KalmanFilter('path.json')
     kf.run()
     kf.results()
