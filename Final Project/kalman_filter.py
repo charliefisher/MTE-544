@@ -51,8 +51,9 @@ class KalmanFilter:
         # prediction estimation - this is your "Priori"
         # robot starts from rest at (0, 0), pointing forward
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
+        # covariance initial estimate
         # covariance is zero since the initial estimate is the starting pose of the robot
-        self.P = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))  # covariance initial estimate
+        self.P = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))
 
         ## Motion Model ##
 
@@ -78,8 +79,8 @@ class KalmanFilter:
         var_a = self._imu['linear_acceleration_covariance'][0]  # var of x about x axis
         var_omega = self._imu['angular_velocity_covariance'][8]  # var of z about z axis
         # NOTE: var_a and var_omega are in the robots frame
-        # The angular acceleration in the robots frame is equal to the angular
-        # acceleration in the global frame
+        # The angular velocity in the robots frame is equal to the angular
+        # velocity in the global frame
         # The linear acceleration in the robots frame is decomposed into its global
         # x and y components
         # The robot acceleration in y in the robot frame is 0 since the TurtleBot 3 is
@@ -116,7 +117,6 @@ class KalmanFilter:
         cov_yd_yd = twist_covariance[1,1]
 
         # assumes measurements are independent
-        # TODO: confirm this
         self.R = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))
         self.R[0,0] = cov_x_x
         self.R[1,1] = cov_xd_xd
@@ -161,7 +161,7 @@ class KalmanFilter:
         qz = rotation[2]
         qw = rotation[3]
 
-        # convert quarternion to transformation matrix
+        # convert translation and quarternion to transformation matrix
         return np.array([
             [qw**2 + qx**2 - qy**2 - qz**2, 2*(qx*qy-qz*qw), translation[0]],
             [2*(qw*qz + qx*qy), qw**2 - qx**2 + qy**2 - qz**2, translation[1]],
