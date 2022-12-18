@@ -202,12 +202,12 @@ class KalmanFilter:
             # prediction update
             xhat_k = self.A@self.xhat + self.B@u  # no process noise on prediction
             P_predict = self.A@self.P@self.A.transpose() + self.Q
-            # this co-variance is the prediction of essentially how the measurement and sensor model move together
-            # in relation to each state and helps scale our kalman gain by giving
-            # the ratio. By Definition, P is the variance of the state space, and
-            # by applying it to the motion model we're getting a motion uncertainty
-            # which can be propogated and applied to the measurement model and
-            # expand its uncertainty as well
+            # this co-variance is the prediction of essentially how the measurement
+            # and sensor model move together in relation to each state and helps scale
+            #  our kalman gain by giving the ratio. By Definition, P is the variance 
+            # of the state space, and by applying it to the motion model we're getting
+            # a motion uncertainty which can be propogated and applied to the 
+            # measurement model and expand its uncertainty as well
 
             # measurement update and Kalman Gain
             K = P_predict@self.C.transpose()@np.linalg.inv(self.C@P_predict@self.C.transpose() + self.R)
@@ -278,15 +278,16 @@ class KalmanFilter:
         # calculate actual robot pose, used to calculate MSE
         t, true_robot_pose = self._compute_true_robot_position()
 
-        # extract pose from state
+        # extract localized pose from state
         localized_pose = np.hstack([
             self._state[:, 0].reshape(-1, 1),
             self._state[:, 2].reshape(-1, 1),
             self._state[:, 4].reshape(-1, 1),
         ])
 
+        """Plots vectors to show robot heading along the robot's path"""
         def plot_robot_heading(state) -> None:
-            subsample_n: int = 75
+            subsample_n: int = 75  # plot heading every n iterations of filter
 
             state_subsampled = state[::subsample_n]
             u = np.cos(state_subsampled[:, 2])
