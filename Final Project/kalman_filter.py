@@ -23,13 +23,12 @@ BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
 
 """
 Kalman filter to localize TurtleBot 3
-State vector: [x; x_dot; y; y_dot; theta]
 """
 class KalmanFilter:
     N_STATES: int = 5
     
     def __init__(self, data_file_path: str) -> None:
-        # read exported data from bagfile
+        # read exported data from bag file
         with open(data_file_path, 'r') as data_file:
             data = json.load(data_file)
 
@@ -52,15 +51,16 @@ class KalmanFilter:
         # prediction estimation - this is your "Priori"
         # robot starts from rest at (0, 0), pointing forward
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
-        self.P = np.identity(KalmanFilter.N_STATES) # covariance initial estimation
+        self.P = np.identity(KalmanFilter.N_STATES) # covariance initial estimate
         # the covariance matrix P is the weighted covariance between the
         # motion model definition - establish your robots "movement"
+        # TODO: update this
 
         ## Motion Model ##
 
         # state space equations of system (in global frame)
-        # state vector: [x, x_dot, y, y_dot, theta] 
-        # input vector: [a_x, a_y, omega]
+        # state vector: [x; x_dot; y; y_dot; theta] 
+        # input vector: [a_x; a_y; omega]
         self.A = np.array([
             [1, self._dt, 0, 0, 0],
             [0, 1, 0, 0, 0],
@@ -81,11 +81,15 @@ class KalmanFilter:
         var_omega = self._imu['angular_velocity_covariance'][8]  # var of z about z axis
         # NOTE: var_a and var_omega are in the robots frame
         # The angular acceleration in the robots frame is equal to the angular
-        # acceleration in the robot frame
+        # acceleration in the global frame
         # The linear acceleration in the robots frame is decomposed into its global
-        # x and y coordinates
-        # The robot acceleration in y is 0 since the TurtleBot 3 is nonholonomic
+        # x and y components
+        # The robot acceleration in y in the robot frame is 0 since the TurtleBot 3 is
+        # nonholonomic
 
+        # cov(x, x_dot) = (1)*sigma_x*sigma_x_dot
+        # assume variance of y is the same as x
+        # assume variance of x and y do not depend on theta
         self.Q = np.array([
             [1/4*self._dt**4*var_a, 1/2*self._dt**3*var_a, 0, 0, 0],
             [1/2*self._dt**3*var_a, self._dt**2*var_a, 0, 0, 0],
@@ -140,6 +144,32 @@ class KalmanFilter:
         assert(closest_input is not None)  # should always find an input
         return closest_input
 
+    """Convert orientation quaternion to robot heading"""
+    def _orientation_to_heading(self, orientation: Quaternion) -> float:
+        qx = orientation[0]
+        qy = orientation[1]
+        qz = orientation[2]
+        qw = orientation[3]
+
+        # convert quarternion to robot heading
+        t3 = 2.0*(qw * qz + qx * qy)
+        t4 = 1.0 - 2.0*(qy*qy + qz*qz)
+        return math.atan2(t3, t4)
+
+    """Convert quaternion to homogeneous transformation matrix"""
+    def _tf_to_homogenous(self, translation: Vector3, rotation: Quaternion) -> np.array:
+        qx = rotation[0]
+        qy = rotation[1]
+        qz = rotation[2]
+        qw = rotation[3]
+
+        # convert quarternion to transformation matrix
+        return np.array([
+            [qw**2 + qx**2 - qy**2 - qz**2, 2*(qx*qy-qz*qw), translation[0]],
+            [2*(qw*qz + qx*qy), qw**2 - qx**2 + qy**2 - qz**2, translation[1]],
+            [0, 0, 1]
+        ], np.float64)
+
     def run(self) -> States:
         n_data_points = len(self._odom_data)  # run filter as long as we have measurements
 
@@ -152,7 +182,7 @@ class KalmanFilter:
             # get input
             closest_input = self._get_closest_input(t)
             a_x_robot = closest_input['linear_acceleration'][0]
-            theta = self.orientation_to_heading(closest_input['orientation'])
+            theta = self._orientation_to_heading(closest_input['orientation'])
             # decompose robot acceleration into global accelerations
             a_x = a_x_robot*np.cos(theta)
             a_y = a_x_robot*np.sin(theta)
@@ -165,7 +195,7 @@ class KalmanFilter:
                 self._odom_data[k]['twist']['linear'][0],
                 self._odom_data[k]['pose']['position'][1],
                 self._odom_data[k]['twist']['linear'][1],
-                self.orientation_to_heading(self._odom_data[k]['pose']['orientation']),
+                self._orientation_to_heading(self._odom_data[k]['pose']['orientation']),
             ]).reshape((KalmanFilter.N_STATES, 1))
 
             ## Kalman Filter Estimation ##
@@ -201,32 +231,6 @@ class KalmanFilter:
 
         return self._state
 
-    """Convert orientation quaternion to robot heading"""
-    def orientation_to_heading(self, orientation: Quaternion) -> float:
-        qx = orientation[0]
-        qy = orientation[1]
-        qz = orientation[2]
-        qw = orientation[3]
-
-        # convert quarternion to robot heading
-        t3 = 2.0*(qw * qz + qx * qy)
-        t4 = 1.0 - 2.0*(qy*qy + qz*qz)
-        return math.atan2(t3, t4)
-
-    """Convert quaternion to homogeneous transformation matrix"""
-    def tf_to_homogenous(self, translation: Vector3, rotation: Quaternion) -> np.array:
-        qx = rotation[0]
-        qy = rotation[1]
-        qz = rotation[2]
-        qw = rotation[3]
-
-        # convert quarternion to transformation matrix
-        return np.array([
-            [qw**2 + qx**2 - qy**2 - qz**2, 2*(qx*qy-qz*qw), translation[0]],
-            [2*(qw*qz + qx*qy), qw**2 - qx**2 + qy**2 - qz**2, translation[1]],
-            [0, 0, 1]
-        ], np.float64)
-
     """
     Calculate the actual pose of the robot from /tf
     This uses the transformation from base_footprint to odom
@@ -250,14 +254,14 @@ class KalmanFilter:
 
         for i, tf in enumerate(tf_base_footprint_to_odom):
             # compute transform for current pose
-            bf_to_odom = self.tf_to_homogenous(
+            bf_to_odom = self._tf_to_homogenous(
                 tf['transform']['translation'], tf['transform']['rotation']
             )
             # transform origin in base_footprint frame to odom frame
             bf_pose_in_odom = bf_to_odom@origin
 
             # replace homogenous coordinate with theta
-            bf_pose_in_odom[2] = self.orientation_to_heading(tf['transform']['rotation'])
+            bf_pose_in_odom[2] = self._orientation_to_heading(tf['transform']['rotation'])
             # store robot pose in odom frame
             robot_pose[i] = bf_pose_in_odom.T
             # compute elapsed time for current pose
