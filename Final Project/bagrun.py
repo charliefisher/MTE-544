@@ -12,11 +12,13 @@ from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 
 
+# total number of messages per topic
 TF_COUNT: int = 1287
 TF_STATIC_COUNT: int = 1
 IMU_COUNT: int = 5280
 ODOM_COUNT: int = 776
 
+# keys for specific transforms of interest
 BASE_FOOTPRINT_TO_ODOM: str = 'base_footprint_to_odom'
 LEFT_WHEEL_TO_BASE_LINK: str = 'left_wheel_to_base'
 RIGHT_WHEEL_TO_BASE_LINK: str = 'right_wheel_to_base'
@@ -51,6 +53,7 @@ class Bagreader(Node):
             QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         )
         
+        # initialize data dictionary, populated by subscriber callbacks
         self.data = {
             'tf': {
                 BASE_FOOTPRINT_TO_ODOM: [],
@@ -61,27 +64,33 @@ class Bagreader(Node):
             'imu': {},
             'odom': {},
         }
+        # count how many of each message type have been read
         self.tf_msg_count = 0
         self.tf_static_msg_count = 0
         self.imu_msg_count = 0
         self.odom_msg_count = 0
 
+    """Serializes a Vector3 message"""
     def serialize_vector3(self, vec: Vector3) -> tuple:
         return (vec.x, vec.y, vec.z)
 
+    """Serializes a Quaternion message"""
     def serialize_quaternion(self, q: Quaternion) -> tuple:
         return (q.x, q.y, q.z, q.w)
 
+    """Serializes a Transform message"""
     def serialize_transform(self, transform: Transform) -> dict:
         return {
             'translation': self.serialize_vector3(transform.translation),
             'rotation': self.serialize_quaternion(transform.rotation),
         }
 
+    """Serializes a Time message"""
     def serialize_time(self, time: Time) -> int:
         return rclpy.time.Time.from_msg(time).nanoseconds
 
     def tf_callback(self, msg: TFMessage) -> None:
+        # add only transforms of interest
         for tf in msg.transforms:
             if tf.header.frame_id == 'odom' and tf.child_frame_id == 'base_footprint':
                 self.data['tf'][BASE_FOOTPRINT_TO_ODOM].append({
@@ -103,9 +112,11 @@ class Bagreader(Node):
         self.check_complete()
 
     def tf_static_callback(self, msg: TFMessage) -> None:
+        # keys for specific transforms of interest
         BASE_LINK_TO_BASE_FOOTPRINT: str = 'base_link_to_base_footprint'
         IMU_LINK_TO_BASE_LINK: str = 'imu_link_to_base_link'
 
+        # add only transforms of interest
         for tf in msg.transforms:
             if tf.header.frame_id == 'base_footprint' and tf.child_frame_id == 'base_link':
                 self.data['tf_static'][BASE_LINK_TO_BASE_FOOTPRINT] = self.serialize_transform(tf.transform)
@@ -130,9 +141,11 @@ class Bagreader(Node):
         if 'linear_acceleration_covariance' not in self.data['imu']:
             self.data['imu']['linear_acceleration_covariance'] = msg.linear_acceleration_covariance.tolist()
         
+        # initialize data field once
         if 'data' not in self.data['imu']:
             self.data['imu']['data'] = []
 
+        # add imu reading
         self.data['imu']['data'].append({
             'time': self.serialize_time(msg.header.stamp),
             'orientation': self.serialize_quaternion(msg.orientation),
@@ -156,9 +169,11 @@ class Bagreader(Node):
         if 'twist_covariance' not in self.data['odom']:
             self.data['odom']['twist_covariance'] = msg.twist.covariance.tolist()
         
+        # initialize data field once
         if 'data' not in self.data['odom']:
             self.data['odom']['data'] = []
 
+        # add odom reading
         self.data['odom']['data'].append({
             'time': self.serialize_time(msg.header.stamp),
             'pose': {
@@ -174,13 +189,15 @@ class Bagreader(Node):
         self.odom_msg_count += 1
         self.check_complete()
 
+    """Checks if bag reading is complete and exports data"""
     def check_complete(self) -> None:
-        total_msg_count: int = self.tf_msg_count + self.tf_static_msg_count + self.imu_msg_count + self.odom_msg_count
+        # get total message count and print update
+        total_msg_count: int = (self.tf_msg_count + self.tf_static_msg_count + 
+            self.imu_msg_count + self.odom_msg_count)
         if total_msg_count % 500 == 0:
             self.get_logger().info('Read {} messages'.format(total_msg_count))
 
-        # self.get_logger().info('{} {} {}'.format(self.tf_msg_count, self.imu_msg_count, self.odom_msg_count))
-
+        # if all messages have been read, export to file
         if (self.tf_msg_count == TF_COUNT and
             self.tf_static_msg_count == TF_STATIC_COUNT and
             self.imu_msg_count == IMU_COUNT and
@@ -192,6 +209,7 @@ class Bagreader(Node):
                 json.dump(self.data, fp)
 
             self.get_logger().info('Reading complete!')
+
 
 def main(args=None):
     # initialize the ROS communication
