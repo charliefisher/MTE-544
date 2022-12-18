@@ -51,10 +51,8 @@ class KalmanFilter:
         # prediction estimation - this is your "Priori"
         # robot starts from rest at (0, 0), pointing forward
         self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
-        self.P = np.identity(KalmanFilter.N_STATES) # covariance initial estimate
-        # the covariance matrix P is the weighted covariance between the
-        # motion model definition - establish your robots "movement"
-        # TODO: update this
+        # covariance is zero since the initial estimate is the starting pose of the robot
+        self.P = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))  # covariance initial estimate
 
         ## Motion Model ##
 
