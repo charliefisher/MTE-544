@@ -152,7 +152,7 @@ class KalmanFilter:
             # get input
             closest_input = self._get_closest_input(t)
             a_x_robot = closest_input['linear_acceleration'][0]
-            theta = self.xhat[4,0]
+            theta = self.orientation_to_heading(closest_input['orientation'])
             # decompose robot acceleration into global accelerations
             a_x = a_x_robot*np.cos(theta)
             a_y = a_x_robot*np.sin(theta)
