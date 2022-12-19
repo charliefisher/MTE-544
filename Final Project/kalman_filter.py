@@ -48,13 +48,6 @@ class KalmanFilter:
         self._T: np.array = None
         self._state: States = None
 
-        # prediction estimation - this is your "Priori"
-        # robot starts from rest at (0, 0), pointing forward
-        self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
-        # covariance initial estimate
-        # covariance is zero since the initial estimate is the starting pose of the robot
-        self.P = np.zeros((KalmanFilter.N_STATES, KalmanFilter.N_STATES))
-
         ## Motion Model ##
 
         # state space equations of system (in global frame)
@@ -124,6 +117,13 @@ class KalmanFilter:
         self.R[3,3] = cov_yd_yd
         self.R[4,4] = cov_rot_z_z
         assert(np.array_equal(self.R, np.diagflat(np.diag(self.R))))
+
+        # prediction estimation - this is your "Priori"
+        # robot starts from rest at (0, 0), pointing forward
+        self.xhat = np.array([0, 0, 0, 0, 0]).reshape((KalmanFilter.N_STATES, 1))
+        # covariance initial estimate
+        # covariance is equal to R since initial estimate is based off /odom data
+        self.P = self.R
 
     """Finds the most recent measurement from /imu given a time"""
     def _get_closest_input(self, t: float) -> dict:
@@ -364,7 +364,7 @@ class KalmanFilter:
         x_mse = self._mse(true_robot_pose[:, 0], localized_pose[:, 0])
         y_mse = self._mse(true_robot_pose[:, 1], localized_pose[:, 1])
         theta_mse = self._mse(true_robot_pose[:, 2], localized_pose[:, 2])
-        print('----- Mean Squared Error (MSE) -----')
+        print('\n----- Mean Squared Error (MSE) -----')
         print('  X:', x_mse)
         print('  Y:', y_mse)
         print('  Theta:', theta_mse)
@@ -375,6 +375,7 @@ class KalmanFilter:
 
 
 def main():
+    print("Running Kalman filter...")
     kf = KalmanFilter('path.json')
     kf.run()
     kf.results()
